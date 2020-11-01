@@ -1,0 +1,1 @@
+HEIGHT, WIDTH = 320, 320
