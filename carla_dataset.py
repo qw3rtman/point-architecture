@@ -6,20 +6,16 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
+import imgaug.augmenters as iaa
+
+from .const import GAP, STEPS
 
 
 np.random.seed(0)
 torch.manual_seed(0)
 
-# Data has frame skip of 5.
-GAP = 4
-STEPS = 5
-
-COMMANDS = 6
-
 CROP_SIZE = 192
 MAP_SIZE = 320
-BIRDVIEW_CHANNELS = 7
 
 def repeater(loader):
     for loader in repeat(loader):
@@ -52,9 +48,8 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
             ])
 
         episodes = list((Path(dataset_dir) / train_or_val).glob('*'))
-        num_episodes = int(max(1, kwargs.get('dataset_size', 1.0) * len(episodes)))
 
-        for _dataset_dir in episodes[:num_episodes]:
+        for _dataset_dir in episodes:
             data.append(CarlaDataset(str(_dataset_dir), transform, **kwargs))
 
         print('%d frames.' % sum(map(len, data)))
@@ -82,6 +77,20 @@ def crop_birdview(birdview, dx=0, dy=0):
     return birdview
 
 
+def get_augmenter():
+    seq = iaa.Sequential([
+        iaa.Sometimes(0.05, iaa.GaussianBlur((0.0, 1.3))),
+        iaa.Sometimes(0.05, iaa.AdditiveGaussianNoise(scale=(0.0, 0.05 * 255))),
+        iaa.Sometimes(0.05, iaa.Dropout((0.0, 0.1))),
+        iaa.Sometimes(0.10, iaa.Add((-0.05 * 255, 0.05 * 255), True)),
+        iaa.Sometimes(0.20, iaa.Add((0.25, 2.5), True)),
+        iaa.Sometimes(0.05, iaa.contrast.LinearContrast((0.5, 1.5))),
+        iaa.Sometimes(0.05, iaa.MultiplySaturation((0.0, 1.0))),
+        ])
+
+    return seq.augment_image
+
+
 class CarlaDataset(Dataset):
     def __init__(self, dataset_dir, transform=transforms.ToTensor(), **kwargs):
         dataset_dir = Path(dataset_dir)
@@ -89,6 +98,7 @@ class CarlaDataset(Dataset):
         self.dataset_dir = dataset_dir
         self.transform = transform
         self.to_tensor = transforms.ToTensor()
+        self.xy = np.empty((len(list(dataset_dir.glob('image*.png'))), 2))
 
         self.frames = list()
 
@@ -99,11 +109,13 @@ class CarlaDataset(Dataset):
             assert (dataset_dir / ('segmentation_%s.png' % frame)).exists()
             assert (dataset_dir / ('birdview_%s.npy' % frame)).exists()
             assert (dataset_dir / ('measurements_%s.npy' % frame)).exists()
+            x, y, _, _ = np.load(str(dataset_dir / ('measurements_%s.npy' % frame)))
+            self.xy[int(frame), :] = np.array([x, y])
 
             self.frames.append(frame)
 
     def __len__(self):
-        return len(self.frames) - GAP * STEPS
+        return len(self.frames) - (GAP * (STEPS+1))
 
     def __getitem__(self, idx):
         path = self.dataset_dir
@@ -129,7 +141,9 @@ class CarlaDataset(Dataset):
                 s += l
         points = torch.as_tensor(points, dtype=torch.float)
 
-        return rgb, points, '%s %s' % (path.stem, frame)
+        waypoints = self.xy[idx+GAP:idx+(GAP*(STEPS+1)):GAP] - self.xy[idx]
+
+        return rgb, points, waypoints
 
 
 if __name__ == '__main__':
