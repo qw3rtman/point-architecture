@@ -1,8 +1,11 @@
+import math
+from itertools import chain
+
 import torch
 import torch.nn as nn
 import numpy as np
 
-from .const import HEIGHT, WIDTH
+from .const import HEIGHT, WIDTH, C
 from .util import SpatialSoftmax
 
 class Flatten(nn.Module):
@@ -13,37 +16,50 @@ class AttentivePolicy(nn.Module):
     def __init__(self, steps=5, temperature=1.0, hidden_size=512, nhead=8, num_layers=2, **kwargs):
         super().__init__()
 
-        self.positional_fc = nn.Sequential(
-            nn.Linear(2, (hidden_size-7)//2),
+        h = hidden_size//2
+
+        self.class_embedding = nn.Parameter(torch.empty(C, h))
+        stdv = 1./math.sqrt(h)
+        self.class_embedding.data.uniform_(-stdv, stdv)
+
+        self.positional_encoding = nn.Sequential(
+            nn.Linear(2, h//2),
             nn.ReLU(True),
-            nn.Linear((hidden_size-7)//2, hidden_size-7)
+            nn.Linear(h//2, h)
         )
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_size, nhead=nhead)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        self.deconv = nn.Sequential(
-            nn.BatchNorm2d(512), # 2048 for resnet50
-            nn.ConvTranspose2d(512, 256, 3, 2, 1, 1), # 2048 for resnet50
-            nn.ReLU(True),
-            nn.BatchNorm2d(256),
-            nn.ConvTranspose2d(256, 128, 3, 2, 1, 1),
-            nn.ReLU(True),
-            nn.BatchNorm2d(128),
-            nn.ConvTranspose2d(128, 64, 3, 2, 1, 1),
-            nn.ReLU(True))
+        self.deconv = nn.Sequential(*chain(*[
+            (
+                nn.BatchNorm2d(dim),
+                nn.ConvTranspose2d(dim, dim//2, 3, 2, 1, 1),
+                nn.GELU() # NOTE
+            ) for dim in hidden_size//(2**np.arange(3))
+        ]))
 
+        self.extract = nn.Sequential(
+            nn.BatchNorm2d(hidden_size//8),
+            nn.Conv2d(hidden_size//8, steps, 1, 1, 0),
+            SpatialSoftmax(temperature)
+        )
+
+        """ TODO: action conditioned
         self.extract = nn.ModuleList([
             nn.Sequential(
-                nn.BatchNorm2d(64),
-                nn.Conv2d(64,steps,1,1,0),
+                nn.BatchNorm2d(hidden_size//8),
+                nn.Conv2d(hidden_size//8, steps, 1, 1, 0),
                 SpatialSoftmax(temperature)
-            ) for i in range(4)
+            ) for i in range(3)
         ])
+        """
 
     def forward(self, M):
         """
-        M : map, (N x 9)
+        M : map, (N x 3)
         """
-        M = torch.cat([self.positional_fc(M[..., :2]), M[..., 2:]], dim=-1)
-        return self.transformer(M).mean(dim=1)
+        return self.extract(self.deconv(self.transformer(torch.cat([
+            self.positional_encoding(M[..., :2]),
+            self.class_embedding[M[..., 2].long()]
+        ], dim=-1).permute(1,0,2))[:1].permute(1,2,0).unsqueeze(-1)))

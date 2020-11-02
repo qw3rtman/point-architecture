@@ -118,14 +118,14 @@ class CarlaDataset(Dataset):
         birdview = np.load(str(path / ('birdview_%s.npy' % frame)))
         birdview = np.float32(birdview[4:,4:] != birdview[:-4,:-4])[::4,::4]
 
-        classes = np.eye(birdview.shape[-1])
-        points = np.empty((int(birdview.sum()), 9)) # TODO: add velocity_x, velocity_y
+        # TODO: add velocity_x, velocity_y
+        points = np.empty((int(birdview.sum()), 3)) # x, y, class
         s = 0
         for c in range(birdview.shape[-1]):
             l = int(birdview[...,c].sum())
             if l > 0:
                 points[s:s+l,:2] = np.stack(np.where(birdview[...,c]), axis=1)
-                points[s:s+l,2:] = classes[c]
+                points[s:s+l,2] = c
                 s += l
         points = torch.as_tensor(points, dtype=torch.float)
 
