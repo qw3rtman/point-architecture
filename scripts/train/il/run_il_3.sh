@@ -11,7 +11,7 @@ python -m consistency.train_il \
     --max_epoch 200 \
     --checkpoint_dir /scratch/cluster/nimit/checkpoints \
     --dataset_dir /scratch/cluster/bzhou/data/highway_v3 \
-    --hidden_size 256 \
-    --batch_size 64 \
+    --hidden_size 128 \
+    --batch_size 128 \
     --lr 0.0002 \
     --weight_decay 3.8e-07

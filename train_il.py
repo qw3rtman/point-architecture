@@ -27,14 +27,12 @@ def train_or_eval(net, data, optim, is_train, config):
 
     tick = time.time()
     iterator = tqdm.tqdm(data, desc=desc, total=len(data), position=1, leave=None)
-    for i, (_, M, w) in enumerate(iterator):
-        print(M)
-        print(w)
-        print()
-        M = M.to(config['device'])
+    for i, (M_pad, M_mask, w) in enumerate(iterator):
+        M_pad = M_pad.to(config['device'])
+        M_mask = M_mask.to(config['device'])
         w = w.to(config['device'])
 
-        _w = net(M)
+        _w = net(M_pad, M_mask)
         loss = criterion(_w, w)
         loss_mean = loss.mean()
 
@@ -47,7 +45,7 @@ def train_or_eval(net, data, optim, is_train, config):
 
         losses.append(loss_mean.item())
         metrics = {'loss': loss_mean.item(),
-                   'images_per_second': rgb.shape[0] / (time.time() - tick)}
+                   'images_per_second': M_mask.sum().item() / (time.time() - tick)}
         wandb.log({('%s/%s' % (desc, k)): v for k, v in metrics.items()},
                 step=wandb.run.summary['step'])
 
@@ -136,7 +134,7 @@ if __name__ == '__main__':
                 },
 
             'data_args': {
-                'num_workers': 8,
+                'num_workers': 4,
                 'dataset_dir': parsed.dataset_dir,
                 'batch_size': parsed.batch_size,
                 },

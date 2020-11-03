@@ -28,7 +28,7 @@ TRAIN = """#!/bin/zsh
 source $HOME/.zshrc
 
 export WANDB_DIR=/scratch/cluster/nimit
-cd $HOME/Documents/robomaster/habitat2robomaster
+cd $HOME/Documents/robomaster
 
 conda env list
 conda activate /scratch/cluster/nimit/miniconda3/envs/robo

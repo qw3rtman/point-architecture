@@ -1,9 +1,11 @@
 from pathlib import Path
+from itertools import repeat
 
 import numpy as np
 import torch
 
 from torch.utils.data import Dataset
+from torch.nn.utils.rnn import pad_sequence
 from torchvision import transforms
 from PIL import Image
 import imgaug.augmenters as iaa
@@ -17,6 +19,16 @@ torch.manual_seed(0)
 CROP_SIZE = 192
 MAP_SIZE = 320
 
+def pad_collate(batch):
+    _, M, w = zip(*batch)
+    M_len = [len(m) for m in M]
+    M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.bool)
+    for i, m_len in enumerate(M_len):
+        M_mask[i,:m_len] = 1
+    M_pad = pad_sequence(M, batch_first=True, padding_value=0)
+
+    return M_pad, M_mask, torch.as_tensor(np.stack(w))
+
 def repeater(loader):
     for loader in repeat(loader):
         for data in loader:
@@ -28,7 +40,7 @@ class Wrap(object):
 
         self.dataloader = torch.utils.data.DataLoader(datasets, shuffle=True,
                 batch_size=batch_size, num_workers=num_workers, drop_last=True,
-                pin_memory=True)
+                collate_fn=pad_collate, pin_memory=True)
         self.data = repeater(self.dataloader)
         self.samples = samples
 
@@ -49,13 +61,12 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
 
         episodes = list((Path(dataset_dir) / train_or_val).glob('*'))
 
-        for _dataset_dir in episodes:
+        for i, _dataset_dir in enumerate(episodes):
             data.append(CarlaDataset(str(_dataset_dir), transform, **kwargs))
 
-        print('%d frames.' % sum(map(len, data)))
+            if i % 5 == 0:
+                print(f'{i} episodes')
 
-        # TODO: batching via masking!!
-        data = torch.utils.data.ConcatDataset(data)
         data = Wrap(data, batch_size, 1000 if train_or_val == 'train' else 100, num_workers)
 
         return data
@@ -131,13 +142,17 @@ class CarlaDataset(Dataset):
         birdview = np.float32(birdview[4:,4:] != birdview[:-4,:-4])[::4,::4]
 
         # TODO: add velocity_x, velocity_y
-        points = np.empty((int(birdview.sum()), 3)) # x, y, class
+        points = np.empty((int(birdview.sum())+1, 3)) # x, y, class
+        points[0] = np.array([0., 0., 0]) # NOTE: ego-vehicle
         s = 0
         for c in range(birdview.shape[-1]):
             l = int(birdview[...,c].sum())
             if l > 0:
-                points[s:s+l,:2] = np.stack(np.where(birdview[...,c]), axis=1)
-                points[s:s+l,2] = c
+                x, y = np.where(birdview[...,c])
+                x = (2*(160//4)) - x
+                y -= (160//4)
+                points[s:s+l,:2] = np.stack([x,y], axis=1)
+                points[s:s+l,2] = c + 1 # NOTE: class 0 = ego-vehicle
                 s += l
         points = torch.as_tensor(points, dtype=torch.float)
 
