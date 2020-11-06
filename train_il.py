@@ -27,13 +27,14 @@ def train_or_eval(net, data, optim, is_train, config):
 
     tick = time.time()
     iterator = tqdm.tqdm(data, desc=desc, total=len(data), position=1, leave=None)
-    for i, (M_pad, M_mask, w) in enumerate(iterator):
+    for i, (M_pad, M_mask, waypoints, action) in enumerate(iterator):
         M_pad = M_pad.to(config['device'])
         M_mask = M_mask.to(config['device'])
-        w = w.to(config['device'])
+        waypoints = waypoints.to(config['device'])
+        action = action.to(config['device'])
 
-        _w = net(M_pad, M_mask)
-        loss = criterion(_w, w)
+        _waypoints = net(M_pad, M_mask, action)
+        loss = criterion(_waypoints, waypoints)
         loss_mean = loss.mean()
 
         if is_train:

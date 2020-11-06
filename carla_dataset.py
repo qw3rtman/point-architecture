@@ -11,6 +11,7 @@ from PIL import Image
 import imgaug.augmenters as iaa
 
 from .const import GAP, STEPS
+from .util import rotate_origin_only
 
 
 np.random.seed(0)
@@ -20,14 +21,14 @@ CROP_SIZE = 192
 MAP_SIZE = 320
 
 def pad_collate(batch):
-    _, M, w = zip(*batch)
+    _, M, w, a = zip(*batch)
     M_len = [len(m) for m in M]
     M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.float)
     for i, m_len in enumerate(M_len):
         M_mask[i,:m_len] = 1
     M_pad = pad_sequence(M, batch_first=True, padding_value=0)
 
-    return M_pad, M_mask, torch.as_tensor(np.stack(w))
+    return M_pad, M_mask, torch.as_tensor(np.stack(w)), torch.as_tensor(np.stack(a))
 
 def repeater(loader):
     for loader in repeat(loader):
@@ -157,8 +158,12 @@ class CarlaDataset(Dataset):
         points = torch.as_tensor(points, dtype=torch.float)
 
         waypoints = self.xy[idx+GAP:idx+(GAP*(STEPS+1)):GAP] - self.xy[idx]
+        waypoints = np.stack(rotate_origin_only(*waypoints.T, angle), axis=-1)
 
-        return rgb, points, waypoints
+        turn = np.arctan2(waypoints[-1, 1], waypoints[-1, 0])
+        action = 1 if turn > 0.10 else (2 if turn < -0.10 else 0)
+
+        return rgb, points, waypoints, action
 
 
 if __name__ == '__main__':
@@ -177,9 +182,10 @@ if __name__ == '__main__':
         (0, 0, 142),      # vehicle
         (220, 20, 60)     # pedestrian
     ]
+    ACTIONS = ['F', 'R', 'L']
 
     data = CarlaDataset(sys.argv[1])
-    for rgb, points, waypoints in data:
+    for rgb, points, waypoints, action in data:
         canvas = np.zeros((80, 80, 3), dtype=np.uint8)
         canvas[...] = BACKGROUND
         for x, y, c in points.flip((0,)):
@@ -197,5 +203,7 @@ if __name__ == '__main__':
         cv2.resizeWindow('map', 400, 400)
 
         rgb = np.uint8(255*rgb.permute(1,2,0))
-        cv2.imshow('rgb', cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
-        cv2.waitKey(0)
+        #cv2.imshow('rgb', cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
+
+        print(ACTIONS[action])
+        cv2.waitKey(10)

@@ -25,21 +25,23 @@ class AttentivePolicy(nn.Module):
 
         self.positional_encoding = nn.Sequential(
             nn.Linear(2, h//2),
-            nn.GELU(),
+            nn.ReLU(),
             nn.Linear(h//2, h)
         )
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_size, nhead=nhead)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # TODO: action conditioned
-        self.extract = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size//2),
-            nn.GELU(),
-            nn.Linear(hidden_size//2, steps*2)
-        )
+        # action conditioned
+        self.extract = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_size, hidden_size//2),
+                nn.ReLU(),
+                nn.Linear(hidden_size//2, steps*2)
+            ) for _ in range(3)
+        ])
 
-    def forward(self, M_pad, M_mask):
+    def forward(self, M_pad, M_mask, action):
         """
         M : map, (N x 3)
         """
@@ -50,9 +52,11 @@ class AttentivePolicy(nn.Module):
         x = torch.cat([pos, c], dim=-1)
         attn = self.transformer(x.permute(1,0,2), src_key_padding_mask=M_mask)[0]
 
-        waypoints = self.extract(attn).reshape(-1, self.steps, 2)
+        out = torch.empty((action.shape[0], self.steps, 2))#.cuda()
+        for a in action.long().unique():
+            out[action==a] = self.extract[a](attn[action==a]).reshape(-1, self.steps, 2)
 
-        return waypoints
+        return out
 
 
 if __name__ == '__main__':

@@ -1,4 +1,5 @@
 import torch
+import math
 
 class SpatialSoftmax(torch.nn.Module):
     """
@@ -29,3 +30,10 @@ class SpatialSoftmax(torch.nn.Module):
         y = (weights.sum(-1) * torch.linspace(-1, 1, logit.shape[-2]).to(logit.device)).sum(-1)
 
         return torch.stack((x, y), -1)
+
+def rotate_origin_only(x, y, radians):
+    """Only rotate a point around the origin (0, 0)."""
+    xx = x * math.cos(radians) + y * math.sin(radians)
+    yy = -x * math.sin(radians) + y * math.cos(radians)
+
+    return xx, yy
