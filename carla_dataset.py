@@ -22,7 +22,7 @@ MAP_SIZE = 320
 def pad_collate(batch):
     _, M, w = zip(*batch)
     M_len = [len(m) for m in M]
-    M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.bool)
+    M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.float)
     for i, m_len in enumerate(M_len):
         M_mask[i,:m_len] = 1
     M_pad = pad_sequence(M, batch_first=True, padding_value=0)
@@ -67,7 +67,7 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
             if i % 5 == 0:
                 print(f'{i} episodes')
 
-        data = Wrap(data, batch_size, 1000 if train_or_val == 'train' else 100, num_workers)
+        data = Wrap(data, batch_size, 100 if train_or_val == 'train' else 10, num_workers)
 
         return data
 
@@ -144,7 +144,7 @@ class CarlaDataset(Dataset):
         # TODO: add velocity_x, velocity_y
         points = np.empty((int(birdview.sum())+1, 3)) # x, y, class
         points[0] = np.array([0., 0., 0]) # NOTE: ego-vehicle
-        s = 0
+        s = 1
         for c in range(birdview.shape[-1]):
             l = int(birdview[...,c].sum())
             if l > 0:
