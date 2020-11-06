@@ -143,7 +143,7 @@ class CarlaDataset(Dataset):
 
         # TODO: add velocity_x, velocity_y
         points = np.empty((int(birdview.sum())+1, 3)) # x, y, class
-        points[0] = np.array([0., 0., 0]) # NOTE: ego-vehicle
+        points[0] = np.array([20., 0., 0]) # NOTE: ego-vehicle
         s = 1
         for c in range(birdview.shape[-1]):
             l = int(birdview[...,c].sum())
@@ -165,41 +165,37 @@ if __name__ == '__main__':
     import sys
     import cv2
     from PIL import ImageDraw
-    from ..utils.common import visualize_birdview
-    from ..utils.converter import ConverterTorch
+
+    BACKGROUND = [0, 0, 0]
+    COLORS = [
+        (238, 123,   8),  # ego-vehicle
+        (128,  64, 128),  # road
+        (  0,   0, 142),  # lane
+        (204, 6, 5),      # red light
+        (250, 210, 1),    # yellow light
+        (39, 232, 51),    # green light
+        (0, 0, 142),      # vehicle
+        (220, 20, 60)     # pedestrian
+    ]
 
     data = CarlaDataset(sys.argv[1])
-    convert = ConverterTorch()
+    for rgb, points, waypoints in data:
+        canvas = np.zeros((80, 80, 3), dtype=np.uint8)
+        canvas[...] = BACKGROUND
+        for x, y, c in points.flip((0,)):
+            x, y, c = int(x.item()), int(y.item()), int(c.item())
+            canvas[x-1, y+39] = COLORS[c]
 
-    for i in range(len(data)):
-        rgb, birdview, meta = data[i]
-        canvas = np.uint8(birdview.detach().cpu().numpy().transpose(1, 2, 0) * 255).copy()
-        canvas = visualize_birdview(canvas)
-        canvas = Image.fromarray(canvas)
+        """
         draw = ImageDraw.Draw(canvas)
+        for x, y in waypoints:
+            draw.ellipse((x-1 - 2, y+39- 2, x-1 + 2, y+39 + 2), fill=(0, 0, 255))
+        """
 
-        origin = np.array([birdview.shape[-1] // 2, birdview.shape[-1] - 5])
-        offsets = np.array([[0, 0], [0, -10], [-5, -20]])
-        points = origin + offsets
-        points_cam = convert(torch.FloatTensor(points))
-        points_reproject = convert.cam_to_map(points_cam)
+        cv2.namedWindow('map', cv2.WINDOW_NORMAL)
+        cv2.imshow('map', cv2.cvtColor(np.array(canvas)[::-1], cv2.COLOR_BGR2RGB))
+        cv2.resizeWindow('map', 400, 400)
 
-        print(points)
-
-        for x, y in points:
-            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(0, 0, 255))
-
-        for x, y in points_reproject:
-            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(255, 0, 0))
-
-        canvas_rgb = np.uint8(rgb.detach().cpu().numpy().transpose(1, 2, 0) * 255).copy()
-        canvas_rgb = Image.fromarray(canvas_rgb)
-        draw_rgb = ImageDraw.Draw(canvas_rgb)
-
-        for x, y in points_cam:
-            draw_rgb.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(0, 0, 255))
-
-
-        cv2.imshow('map', cv2.cvtColor(np.array(canvas), cv2.COLOR_BGR2RGB))
-        cv2.imshow('rgb', cv2.cvtColor(np.array(canvas_rgb), cv2.COLOR_BGR2RGB))
-        cv2.waitKey(200)
+        rgb = np.uint8(255*rgb.permute(1,2,0))
+        cv2.imshow('rgb', cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
+        cv2.waitKey(0)

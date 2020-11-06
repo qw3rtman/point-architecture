@@ -105,6 +105,8 @@ if __name__ == '__main__':
 
     # Model args.
     parser.add_argument('--hidden_size', type=int, required=True)
+    parser.add_argument('--num_layers', type=int, required=True)
+    parser.add_argument('--num_heads', type=int, required=True)
 
     # Data args.
     parser.add_argument('--dataset_dir', type=Path, required=True)
@@ -130,7 +132,9 @@ if __name__ == '__main__':
             'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
 
             'model_args': {
-                'hidden_size': parsed.hidden_size
+                'hidden_size': parsed.hidden_size,
+                'num_layers': parsed.num_layers,
+                'nhead': parsed.num_heads
                 },
 
             'data_args': {
