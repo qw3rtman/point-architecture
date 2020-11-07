@@ -28,7 +28,7 @@ class MultiheadAttention(nn.Module):
         self.W_q = nn.Parameter(torch.empty(self.nhead, self.d_model, self.d_head))
         self.W_q.data.uniform_(-stdv, stdv)
 
-    def forward(self, ego, keys, value):
+    def forward(self, ego, mask, keys, value):
         """
         ego:     (b, 1, d)
         keys:    (h, b, N-1, h_d)
@@ -41,9 +41,10 @@ class MultiheadAttention(nn.Module):
         for head in range(self.nhead):
             query = torch.einsum('bnd,dh->bnh', ego, self.W_q[head])
 
-            x = torch.bmm(query, keys[head].permute(0,2,1))
+            x = torch.bmm(query, keys[head].permute(0,2,1))[:,0]
             x /= math.sqrt(self.d_head)
-            x = nn.functional.softmax(x, dim=0)
+            x[~mask[:,1:]] = float('-inf') # batch-wise pad mask
+            x = nn.functional.softmax(x, dim=-1)
 
             out[...,(head*self.d_head):((head+1)*self.d_head)] = torch.bmm(x, value)
 
@@ -58,7 +59,7 @@ class TransformerEncoderLayer(nn.Module):
 
         self.attention = MultiheadAttention(d_model, nhead)
 
-    def forward(self, ego, keys, value):
+    def forward(self, ego, mask, keys, value):
         """
         ego:     (b, 1, d)
         keys:    (h, b, N-1, h_d)
@@ -67,7 +68,7 @@ class TransformerEncoderLayer(nn.Module):
         out:     (b, 1, d)
         """
 
-        return self.attention(ego, keys, value)
+        return self.attention(ego, mask, keys, value)
         # TODO: MLP
         # TODO: residual
         # TODO: dropout?
@@ -92,21 +93,23 @@ class TransformerEncoder(nn.Module):
         self.W_v = nn.Parameter(torch.empty(self.d_model, self.d_head))
         self.W_v.data.uniform_(-stdv, stdv)
 
-    def forward(self, ego, other):
+    def forward(self, ego, other, mask):
         """
         ego:     (b, 1, d)
         other:   (b, N-1, d)
+        mask:    (b, N-1)
 
         out:     (b, 1, d)
         """
 
         # shared among all layers
-        keys = [torch.mm(other, self.W_k[head]) for head in range(self.nhead)]
-        value = torch.mm(other, self.W_v)
+        print(other.shape, self.W_k[0].shape)
+        keys = [torch.matmul(other, self.W_k[head]) for head in range(self.nhead)]
+        value = torch.matmul(other, self.W_v)
 
         x = ego
         for attn_layer in self.layers:
-            x = attn_layer(x, keys, value)
+            x = attn_layer(x, mask, keys, value)
 
         return x
 
@@ -149,15 +152,12 @@ class AttentivePolicy(nn.Module):
         pos = self.positional_encoding(M_pad[..., :2])
         c = self.class_embedding[M_pad[..., 2].long()]
         x = torch.cat([pos, c], dim=-1)
-
         ego, other = x[:,:1], x[:,1:]
 
-        attn = self.transformer(ego, other)
-        import pdb; pdb.set_trace()
-        #src_key_padding_mask=M_mask
+        attn = self.transformer(ego, other, M_mask)
 
         # extract waypoints
-        out = torch.empty((action.shape[0], self.steps, 2))#.cuda()
+        out = torch.empty((action.shape[0], self.steps, 2)).to(self.class_embedding.device)
         for a in action.long().unique():
             out[action==a] = self.extract[a](attn[action==a]).reshape(-1, self.steps, 2)
 
@@ -167,6 +167,9 @@ class AttentivePolicy(nn.Module):
 if __name__ == '__main__':
     net = AttentivePolicy()
     M_pad = torch.rand((4,250,3))
-    M_mask = torch.ones((4,250), dtype=torch.float)
+    M_mask = torch.ones((4,250), dtype=torch.bool)
+    M_mask[0,150:] = 0
+    M_mask[1,200:] = 0
+    M_mask[2,225:] = 0
 
     net(M_pad, M_mask, torch.Tensor([0]))
