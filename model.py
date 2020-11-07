@@ -1,17 +1,12 @@
 import math
 from itertools import chain
-import copy
 
 import torch
 import torch.nn as nn
 import numpy as np
 
 from .const import HEIGHT, WIDTH, C
-from .util import SpatialSoftmax
-
-
-def _get_clones(module, N):
-    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
+from .util import _get_clones
 
 
 class MultiheadAttention(nn.Module):
@@ -44,7 +39,7 @@ class MultiheadAttention(nn.Module):
             x = torch.bmm(query, keys[head].permute(0,2,1))[:,0]
             x /= math.sqrt(self.d_head)
             x[~mask[:,1:]] = float('-inf') # batch-wise pad mask
-            x = nn.functional.softmax(x, dim=-1)
+            x = nn.functional.softmax(x, dim=-1).unsqueeze(dim=1)
 
             out[...,(head*self.d_head):((head+1)*self.d_head)] = torch.bmm(x, value)
 
@@ -58,6 +53,17 @@ class TransformerEncoderLayer(nn.Module):
         self.d_model = d_model
 
         self.attention = MultiheadAttention(d_model, nhead)
+        self.mlp = nn.Sequential(
+            nn.Linear(d_model, 2048),
+            nn.ReLU(True),
+            nn.Dropout(),
+            nn.Linear(2048, d_model))
+
+        self.dropout1 = nn.Dropout(0.1)
+        self.dropout2 = nn.Dropout(0.1)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
 
     def forward(self, ego, mask, keys, value):
         """
@@ -68,10 +74,12 @@ class TransformerEncoderLayer(nn.Module):
         out:     (b, 1, d)
         """
 
-        return self.attention(ego, mask, keys, value)
-        # TODO: MLP
-        # TODO: residual
-        # TODO: dropout?
+        x1 = self.attention(ego, mask, keys, value)
+        x1 = ego + self.dropout1(x1)
+        x1 = self.norm1(x1)
+        x2 = self.mlp(x1)
+        x1 = x1 + self.dropout2(x2)
+        return self.norm2(x1)
 
 
 class TransformerEncoder(nn.Module):
@@ -103,7 +111,6 @@ class TransformerEncoder(nn.Module):
         """
 
         # shared among all layers
-        print(other.shape, self.W_k[0].shape)
         keys = [torch.matmul(other, self.W_k[head]) for head in range(self.nhead)]
         value = torch.matmul(other, self.W_v)
 
@@ -172,4 +179,4 @@ if __name__ == '__main__':
     M_mask[1,200:] = 0
     M_mask[2,225:] = 0
 
-    net(M_pad, M_mask, torch.Tensor([0]))
+    net(M_pad, M_mask, torch.Tensor([0,0,0,0]))

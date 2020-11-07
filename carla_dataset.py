@@ -23,7 +23,7 @@ MAP_SIZE = 320
 def pad_collate(batch):
     _, M, w, a = zip(*batch)
     M_len = [len(m) for m in M]
-    M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.float)
+    M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.bool)
     for i, m_len in enumerate(M_len):
         M_mask[i,:m_len] = 1
     M_pad = pad_sequence(M, batch_first=True, padding_value=0)
