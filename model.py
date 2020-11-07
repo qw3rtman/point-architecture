@@ -32,7 +32,7 @@ class MultiheadAttention(nn.Module):
         out:     (b, 1, d)
         """
 
-        out = torch.empty(ego.shape[0], 1, self.d_model)
+        out = torch.empty(ego.shape[0], 1, self.d_model).to(self.W_q.device)
         for head in range(self.nhead):
             query = torch.einsum('bnd,dh->bnh', ego, self.W_q[head])
 
@@ -75,11 +75,13 @@ class TransformerEncoderLayer(nn.Module):
         """
 
         x1 = self.attention(ego, mask, keys, value)
-        x1 = ego + self.dropout1(x1)
-        x1 = self.norm1(x1)
-        x2 = self.mlp(x1)
-        x1 = x1 + self.dropout2(x2)
-        return self.norm2(x1)
+        ego = ego + self.dropout1(x1)
+
+        ego = self.norm1(ego)
+        x1 = self.mlp(ego)
+        ego = ego + self.dropout2(x1)
+
+        return self.norm2(ego)
 
 
 class TransformerEncoder(nn.Module):
@@ -172,9 +174,9 @@ class AttentivePolicy(nn.Module):
 
 
 if __name__ == '__main__':
-    net = AttentivePolicy()
-    M_pad = torch.rand((4,250,3))
-    M_mask = torch.ones((4,250), dtype=torch.bool)
+    net = AttentivePolicy().cuda()
+    M_pad = torch.rand((4,250,3)).cuda()
+    M_mask = torch.ones((4,250), dtype=torch.bool).cuda()
     M_mask[0,150:] = 0
     M_mask[1,200:] = 0
     M_mask[2,225:] = 0

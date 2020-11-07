@@ -94,8 +94,10 @@ def main(config, parsed):
 
         wandb.log({'train/loss_epoch': loss_train, 'val/loss_epoch': loss_val})
         checkpoint_project(net, optim, scheduler, config)
-        if epoch % 10 == 0:
+        """
+        if epoch % 25 == 0:
             torch.save(net.state_dict(), Path(wandb.run.dir) / ('model_%03d.t7' % epoch))
+        """
 
 
 if __name__ == '__main__':

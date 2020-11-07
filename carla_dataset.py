@@ -68,7 +68,7 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
             if i % 5 == 0:
                 print(f'{i} episodes')
 
-        data = Wrap(data, batch_size, 100 if train_or_val == 'train' else 10, num_workers)
+        data = Wrap(data, batch_size, 250 if train_or_val == 'train' else 25, num_workers)
 
         return data
 
