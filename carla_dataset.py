@@ -169,41 +169,18 @@ class CarlaDataset(Dataset):
 if __name__ == '__main__':
     import sys
     import cv2
-    from PIL import ImageDraw
-
-    BACKGROUND = [0, 0, 0]
-    COLORS = [
-        (238, 123,   8),  # ego-vehicle
-        (128,  64, 128),  # road
-        (  0,   0, 142),  # lane
-        (204, 6, 5),      # red light
-        (250, 210, 1),    # yellow light
-        (39, 232, 51),    # green light
-        (0, 0, 142),      # vehicle
-        (220, 20, 60)     # pedestrian
-    ]
-    ACTIONS = ['F', 'R', 'L']
+    from .util import visualize_birdview
 
     data = CarlaDataset(sys.argv[1])
-    for rgb, points, waypoints, action in data:
-        canvas = np.zeros((80, 80, 3), dtype=np.uint8)
-        canvas[...] = BACKGROUND
-        for x, y, c in points.flip((0,)):
-            x, y, c = int(x.item()), int(y.item()), int(c.item())
-            canvas[x-1, y+39] = COLORS[c]
+    for i in range(len(data)):
+        rgb, points, waypoints, action = data[i]
 
-        """
-        draw = ImageDraw.Draw(canvas)
-        for x, y in waypoints:
-            draw.ellipse((x-1 - 2, y+39- 2, x-1 + 2, y+39 + 2), fill=(0, 0, 255))
-        """
-
+        canvas = visualize_birdview(points, action, waypoints)
         cv2.namedWindow('map', cv2.WINDOW_NORMAL)
-        cv2.imshow('map', cv2.cvtColor(np.array(canvas)[::-1], cv2.COLOR_BGR2RGB))
+        cv2.imshow('map', cv2.cvtColor(np.array(canvas), cv2.COLOR_BGR2RGB))
         cv2.resizeWindow('map', 400, 400)
 
         rgb = np.uint8(255*rgb.permute(1,2,0))
         #cv2.imshow('rgb', cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
 
-        print(ACTIONS[action])
         cv2.waitKey(10)

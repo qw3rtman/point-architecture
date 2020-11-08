@@ -11,6 +11,7 @@ import torch
 
 from .model import AttentivePolicy
 from .carla_dataset import get_dataset
+from .util import log_visuals
 
 import wandb
 
@@ -23,7 +24,7 @@ def train_or_eval(net, data, optim, is_train, config):
         net.eval()
 
     losses = list()
-    criterion = torch.nn.L1Loss(reduction='mean')
+    criterion = torch.nn.L1Loss(reduction='none')
 
     tick = time.time()
     iterator = tqdm.tqdm(data, desc=desc, total=len(data), position=1, leave=None)
@@ -47,6 +48,8 @@ def train_or_eval(net, data, optim, is_train, config):
         losses.append(loss_mean.item())
         metrics = {'loss': loss_mean.item(),
                    'images_per_second': M_mask.sum().item() / (time.time() - tick)}
+        if i == 0:
+            metrics['images'] = [wandb.Image(log_visuals(M_pad, M_mask, action, waypoints, _waypoints, loss))]
         wandb.log({('%s/%s' % (desc, k)): v for k, v in metrics.items()},
                 step=wandb.run.summary['step'])
 

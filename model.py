@@ -128,16 +128,15 @@ class AttentivePolicy(nn.Module):
         super().__init__()
 
         self.steps = steps
-        h = hidden_size//2
 
-        self.class_embedding = nn.Parameter(torch.empty(C+1, h))
-        stdv = 1./math.sqrt(h)
+        self.class_embedding = nn.Parameter(torch.empty(C+1, hidden_size))
+        stdv = 1./math.sqrt(hidden_size)
         self.class_embedding.data.uniform_(-stdv, stdv)
 
         self.positional_encoding = nn.Sequential(
-            nn.Linear(2, h//2),
+            nn.Linear(2, hidden_size//2),
             nn.ReLU(),
-            nn.Linear(h//2, h)
+            nn.Linear(hidden_size//2, hidden_size)
         )
 
         encoder_layer = TransformerEncoderLayer(hidden_size, nhead)
@@ -160,7 +159,7 @@ class AttentivePolicy(nn.Module):
         # construct inputs. NOTE: cat or sum?
         pos = self.positional_encoding(M_pad[..., :2])
         c = self.class_embedding[M_pad[..., 2].long()]
-        x = torch.cat([pos, c], dim=-1)
+        x = pos + c #torch.cat([pos, c], dim=-1)
         ego, other = x[:,:1], x[:,1:]
 
         attn = self.transformer(ego, other, M_mask)
