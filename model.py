@@ -142,16 +142,22 @@ class AttentivePolicy(nn.Module):
         encoder_layer = TransformerEncoderLayer(hidden_size, nhead)
         self.transformer = TransformerEncoder(encoder_layer, num_layers)
 
+        self.velocity_encoding = nn.Sequential(
+            nn.Linear(1, hidden_size//8),
+            nn.ReLU(),
+            nn.Linear(hidden_size//8, hidden_size//4)
+        )
+
         # action conditioned
         self.extract = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_size, hidden_size//2),
+                nn.Linear(int((5/4)*hidden_size), hidden_size//2),
                 nn.ReLU(),
                 nn.Linear(hidden_size//2, steps*2)
             ) for _ in range(3)
         ])
 
-    def forward(self, M_pad, M_mask, action):
+    def forward(self, M_pad, M_mask, action, velocity):
         """
         M : map, (N x 3)
         """
@@ -162,7 +168,8 @@ class AttentivePolicy(nn.Module):
         x = pos + c #torch.cat([pos, c], dim=-1)
         ego, other = x[:,:1], x[:,1:]
 
-        attn = self.transformer(ego, other, M_mask)
+        attn = self.transformer(ego, other, M_mask)[:,0]
+        attn = torch.cat([attn, self.velocity_encoding(velocity)], dim=1)
 
         # extract waypoints
         out = torch.empty((action.shape[0], self.steps, 2)).to(self.class_embedding.device)
@@ -176,8 +183,9 @@ if __name__ == '__main__':
     net = AttentivePolicy().cuda()
     M_pad = torch.rand((4,250,3)).cuda()
     M_mask = torch.ones((4,250), dtype=torch.bool).cuda()
+    velocity = torch.Tensor([1.5, 2.5, 3.5, 4.5]).unsqueeze(dim=1).cuda()
     M_mask[0,150:] = 0
     M_mask[1,200:] = 0
     M_mask[2,225:] = 0
 
-    net(M_pad, M_mask, torch.Tensor([0,0,0,0]))
+    net(M_pad, M_mask, torch.Tensor([0,0,0,0]), velocity)

@@ -21,14 +21,14 @@ CROP_SIZE = 192
 MAP_SIZE = 320
 
 def pad_collate(batch):
-    _, M, w, a = zip(*batch)
+    _, M, a, v, w = zip(*batch)
     M_len = [len(m) for m in M]
     M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.bool)
     for i, m_len in enumerate(M_len):
         M_mask[i,:m_len] = 1
     M_pad = pad_sequence(M, batch_first=True, padding_value=0)
 
-    return M_pad, M_mask, torch.as_tensor(np.stack(w)), torch.as_tensor(np.stack(a))
+    return M_pad, M_mask, torch.as_tensor(np.stack(a)), torch.as_tensor(np.stack(v), dtype=torch.float).unsqueeze(dim=1), torch.as_tensor(np.stack(w))
 
 def repeater(loader):
     for loader in repeat(loader):
@@ -163,7 +163,9 @@ class CarlaDataset(Dataset):
         turn = np.arctan2(waypoints[-1, 1], waypoints[-1, 0])
         action = 1 if turn > 0.10 else (2 if turn < -0.10 else 0)
 
-        return rgb, points, waypoints, action
+        velocity = np.linalg.norm((self.xy[idx]-self.xy[idx-1]) if idx > 0 else self.xy[idx+1]-self.xy[idx])
+
+        return rgb, points, action, velocity, waypoints
 
 
 if __name__ == '__main__':
@@ -173,7 +175,8 @@ if __name__ == '__main__':
 
     data = CarlaDataset(sys.argv[1])
     for i in range(len(data)):
-        rgb, points, waypoints, action = data[i]
+        rgb, points, action, velocity, waypoints = data[i]
+        print(velocity)
 
         canvas = visualize_birdview(points, action, waypoints)
         cv2.namedWindow('map', cv2.WINDOW_NORMAL)
