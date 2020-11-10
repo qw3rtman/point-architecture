@@ -127,31 +127,26 @@ class AttentivePolicy(nn.Module):
     def __init__(self, steps=5, hidden_size=512, nhead=8, num_layers=2, **kwargs):
         super().__init__()
 
+        self.hidden_size = hidden_size
         self.steps = steps
 
-        self.class_embedding = nn.Parameter(torch.empty(C+1, hidden_size))
+        self.class_embedding = nn.Parameter(torch.empty(C+1, hidden_size//2))
         stdv = 1./math.sqrt(hidden_size)
         self.class_embedding.data.uniform_(-stdv, stdv)
 
         self.positional_encoding = nn.Sequential(
-            nn.Linear(2, hidden_size//2),
+            nn.Linear(2, hidden_size//4),
             nn.ReLU(),
-            nn.Linear(hidden_size//2, hidden_size)
+            nn.Linear(hidden_size//4, hidden_size//2)
         )
 
-        encoder_layer = TransformerEncoderLayer(hidden_size, nhead)
+        encoder_layer = TransformerEncoderLayer(hidden_size//2, nhead)
         self.transformer = TransformerEncoder(encoder_layer, num_layers)
-
-        self.velocity_encoding = nn.Sequential(
-            nn.Linear(1, hidden_size//8),
-            nn.ReLU(),
-            nn.Linear(hidden_size//8, hidden_size//4)
-        )
 
         # action conditioned
         self.extract = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(int((5/4)*hidden_size), hidden_size//2),
+                nn.Linear(hidden_size, hidden_size//2),
                 nn.ReLU(),
                 nn.Linear(hidden_size//2, steps*2)
             ) for _ in range(3)
@@ -169,12 +164,14 @@ class AttentivePolicy(nn.Module):
         ego, other = x[:,:1], x[:,1:]
 
         attn = self.transformer(ego, other, M_mask)[:,0]
-        attn = torch.cat([attn, self.velocity_encoding(velocity)], dim=1)
+
+        # velocity late-fusion, like in LbC
+        fusion = torch.cat([attn, velocity.repeat(1, self.hidden_size//2)], dim=1)
 
         # extract waypoints
         out = torch.empty((action.shape[0], self.steps, 2)).to(self.class_embedding.device)
         for a in action.long().unique():
-            out[action==a] = self.extract[a](attn[action==a]).reshape(-1, self.steps, 2)
+            out[action==a] = self.extract[a](fusion[action==a]).reshape(-1, self.steps, 2)
 
         return out
 

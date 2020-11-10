@@ -176,7 +176,6 @@ if __name__ == '__main__':
     data = CarlaDataset(sys.argv[1])
     for i in range(len(data)):
         rgb, points, action, velocity, waypoints = data[i]
-        print(velocity)
 
         canvas = visualize_birdview(points, action, waypoints)
         cv2.namedWindow('map', cv2.WINDOW_NORMAL)
@@ -186,4 +185,4 @@ if __name__ == '__main__':
         rgb = np.uint8(255*rgb.permute(1,2,0))
         #cv2.imshow('rgb', cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB))
 
-        cv2.waitKey(10)
+        #cv2.waitKey(10)

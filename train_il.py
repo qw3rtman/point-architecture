@@ -31,8 +31,9 @@ def train_or_eval(net, data, optim, is_train, config):
     for i, (M_pad, M_mask, action, velocity, waypoints) in enumerate(iterator):
         M_pad = M_pad.to(config['device'])
         M_mask = M_mask.to(config['device'])
-        waypoints = waypoints.to(config['device'])
         action = action.to(config['device'])
+        velocity = velocity.to(config['device'])
+        waypoints = waypoints.to(config['device'])
 
         _waypoints = net(M_pad, M_mask, action, velocity)
         loss = criterion(_waypoints, waypoints)
@@ -47,7 +48,7 @@ def train_or_eval(net, data, optim, is_train, config):
 
         losses.append(loss_mean.item())
         metrics = {'loss': loss_mean.item(),
-                   'images_per_second': M_mask.sum().item() / (time.time() - tick)}
+                   'samples_per_second': M_pad.shape[0] / (time.time() - tick)}
         if i == 0:
             metrics['images'] = [wandb.Image(log_visuals(M_pad, M_mask, action, waypoints, _waypoints, loss))]
         wandb.log({('%s/%s' % (desc, k)): v for k, v in metrics.items()},
@@ -97,10 +98,8 @@ def main(config, parsed):
 
         wandb.log({'train/loss_epoch': loss_train, 'val/loss_epoch': loss_val})
         checkpoint_project(net, optim, scheduler, config)
-        """
-        if epoch % 25 == 0:
+        if epoch % 50 == 0:
             torch.save(net.state_dict(), Path(wandb.run.dir) / ('model_%03d.t7' % epoch))
-        """
 
 
 if __name__ == '__main__':
