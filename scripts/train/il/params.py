@@ -13,7 +13,7 @@ for batch_size in [64, 128]:
     --description {unique}-v1 \\
     --max_epoch 500 \\
     --checkpoint_dir /scratch/cluster/nimit/checkpoints \\
-    --dataset_dir /scratch/cluster/bzhou/data/highway_v3 \\
+    --dataset_dir /scratch/cluster/nimit/data/carla \\
     --hidden_size {hidden_size} \\
     --num_layers 12 \\
     --num_heads 8 \\

@@ -149,7 +149,7 @@ class AttentivePolicy(nn.Module):
                 nn.Linear(hidden_size, hidden_size//2),
                 nn.ReLU(),
                 nn.Linear(hidden_size//2, steps*2)
-            ) for _ in range(3)
+            ) for _ in range(4)
         ])
 
     def forward(self, M_pad, M_mask, action, velocity):

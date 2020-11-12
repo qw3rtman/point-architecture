@@ -8,12 +8,28 @@ from pathlib import Path
 import tqdm
 import numpy as np
 import torch
+from torchvision.utils import make_grid
 
 from .model import AttentivePolicy
-from .carla_dataset import get_dataset
-from .util import log_visuals
+from .point_dataset import get_dataset, visualize_birdview
 
 import wandb
+
+
+def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoints_batch, loss_batch):
+    mask_batch = mask_batch.cpu()
+    action_batch = action_batch.cpu()
+    waypoints_batch = waypoints_batch.cpu()
+    _waypoints_batch = _waypoints_batch.cpu()
+
+    images = [(
+        loss_batch[i].mean().item(),
+        torch.ByteTensor(np.uint8(visualize_birdview(points[mask_batch[i]], action_batch[i].item(), waypoints_batch[i], _waypoints_batch[i], w_r=1.5)).transpose(2,0,1))
+    ) for i, points in enumerate(points_batch.cpu())]
+    images.sort(key=lambda x: x[0], reverse=True)
+
+    return make_grid([x[1] for x in images[:32]], nrow=4).numpy().transpose(1,2,0)
+
 
 def train_or_eval(net, data, optim, is_train, config):
     if is_train:
@@ -143,7 +159,7 @@ if __name__ == '__main__':
                 },
 
             'data_args': {
-                'num_workers': 4,
+                'num_workers': 8,
                 'dataset_dir': parsed.dataset_dir,
                 'batch_size': parsed.batch_size,
                 },

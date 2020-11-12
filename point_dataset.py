@@ -4,16 +4,19 @@ from operator import attrgetter
 
 import numpy as np
 import torch
-
+from joblib import Memory
+memory = Memory('/scratch/cluster/nimit/cache', verbose=0)
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
+from PIL import Image, ImageDraw, ImageFont
 
 from .const import GAP, STEPS
-from .util import rotate_origin_only
+from .util import rotate_origin_only, BACKGROUND, COLORS, ACTIONS
 
 import sys
 sys.path.append('/u/nimit/Documents/robomaster/point_policy')
 from point.recording import parse
+parse_recording = memory.cache(parse)
 from point.visualization import follow_view_matrix
 
 
@@ -21,7 +24,7 @@ CROP_SIZE = 192
 MAP_SIZE = 320
 
 def pad_collate(batch):
-    _, M, a, v, w = zip(*batch)
+    M, a, v, w = zip(*batch)
     M_len = [len(m) for m in M]
     M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.bool)
     for i, m_len in enumerate(M_len):
@@ -64,9 +67,7 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
             if i % 5 == 0:
                 print(f'{i} episodes')
 
-        data = Wrap(data, batch_size, 250 if train_or_val == 'train' else 25, num_workers)
-
-        return data
+        return Wrap(data, batch_size, 250 if train_or_val == 'train' else 25, num_workers)
 
     train = make_dataset('train')
     val = make_dataset('val')
@@ -75,8 +76,9 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
 
 
 class PointDataset(Dataset):
-    def __init__(self, dataset_dir, **kwargs):
-        self.world_map, self.frames = parse(dataset_dir)
+
+    def __init__(self, dataset_dir):
+        self.world_map, self.frames = parse_recording(dataset_dir)
         self.frames = self.frames[::10] # 20 FPS -> 2 Hz
         self.ego_uid, self.ego_id = attrgetter('uid', 'id')(self.frames[0].cars[0])
 
@@ -132,38 +134,38 @@ class PointDataset(Dataset):
         return None
 
 
+font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
+def visualize_birdview(points, action, waypoints, _waypoints=None, h=100, r=0.5, w_r=0.5):
+    def _scale_points(points):
+        return (points + torch.Tensor([1.0,1.0,0.0])) * torch.Tensor([h//2,h//2,1])
+    def _scale_waypoints(waypoints):
+        return (waypoints + 1.0) * (h//2)
+
+    canvas = np.zeros((h, h, 3), dtype=np.uint8)
+    canvas[...] = BACKGROUND
+    canvas = Image.fromarray(canvas)
+    draw = ImageDraw.Draw(canvas)
+
+    for x, y, c in _scale_points(points):
+        draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=COLORS[int(c.item())])
+
+    for x, y in _scale_waypoints(waypoints):
+        draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=(0, 175, 0))
+
+    if _waypoints is not None:
+        for x, y in _scale_waypoints(_waypoints):
+            draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=(175, 0, 0))
+
+    draw.text((0, 0), ACTIONS[action], fill='black', font=font)
+    return canvas
+
+
 if __name__ == '__main__':
     import sys
     import cv2
     from .const import BACKGROUND, COLORS, ACTIONS
     from PIL import Image, ImageDraw, ImageFont
     #import matplotlib.pyplot as plt
-
-    font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
-    def visualize_birdview(points, action, waypoints, _waypoints=None, h=100, r=0.5, w_r=0.5):
-        def _scale_points(points):
-            return (points + torch.Tensor([1.0,1.0,0.0])) * torch.Tensor([h//2,h//2,1])
-        def _scale_waypoints(waypoints):
-            return (waypoints + 1.0) * (h//2)
-
-        canvas = np.zeros((h, h, 3), dtype=np.uint8)
-        canvas[...] = BACKGROUND
-        canvas = Image.fromarray(canvas)
-        draw = ImageDraw.Draw(canvas)
-
-        for x, y, c in _scale_points(points):
-            draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=COLORS[int(c.item())])
-
-        for x, y in _scale_waypoints(waypoints):
-            draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=(0, 175, 0))
-
-        if _waypoints is not None:
-            for x, y in _scale_waypoints(_waypoints):
-                draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=(0, 175, 0))
-
-        draw.text((0, 0), ACTIONS[action], fill='black', font=font)
-        return canvas
-
 
     data = PointDataset(sys.argv[1])
     for i in range(len(data)):
