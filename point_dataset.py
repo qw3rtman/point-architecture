@@ -20,18 +20,17 @@ parse_recording = memory.cache(parse)
 from point.visualization import follow_view_matrix
 
 
-CROP_SIZE = 192
-MAP_SIZE = 320
+MAP_SIZE = 75
 
 def pad_collate(batch):
-    M, a, v, w = zip(*batch)
+    M, a, w = zip(*batch)
     M_len = [len(m) for m in M]
     M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.bool)
     for i, m_len in enumerate(M_len):
         M_mask[i,:m_len] = 1
     M_pad = pad_sequence(M, batch_first=True, padding_value=0)
 
-    return M_pad, M_mask, torch.as_tensor(np.stack(a)), torch.as_tensor(np.stack(v), dtype=torch.float).unsqueeze(dim=1), torch.as_tensor(np.stack(w))
+    return M_pad, M_mask, torch.as_tensor(np.stack(a)), torch.as_tensor(np.stack(w))
 
 def repeater(loader):
     for loader in repeat(loader):
@@ -82,31 +81,44 @@ class PointDataset(Dataset):
         self.frames = self.frames[::10] # 20 FPS -> 2 Hz
         self.ego_uid, self.ego_id = attrgetter('uid', 'id')(self.frames[0].cars[0])
 
-        self.xy = np.stack([f.actor_by_id(self.ego_id).location[:2] for f in self.frames])
-        self.get_view_matrix = follow_view_matrix(self.ego_id, 100, 100, rotate=True)
+        self.xy = np.empty((len(self.frames), 2))
+        self.rot = np.empty(len(self.frames))
+        for idx, frame in enumerate(self.frames):
+            ego = frame.actor_by_id(self.ego_id)
+            self.xy[idx] = ego.location[:2]
+            self.rot[idx] = ego.rotation[2]
+
+        self.rot = np.deg2rad(self.rot) + np.pi # [0, 2pi]
 
     def __len__(self):
         return len(self.frames) - (GAP * (STEPS+1))
 
     def __getitem__(self, idx):
         points = []
-        # TODO: prune actors that are too far away
         for actor in self.frames[idx].actors:
-            c = self._get_class(actor)
-            if c is not None:
-                points.append(np.concatenate([actor.location[:2], np.array([c])]))
+            if np.max(np.abs(actor.location[:2] - self.xy[idx])) < MAP_SIZE:
+                point = self.get_point(actor)
+                if point is not None:
+                    points.append(point)
+
+        up, right = attrgetter('forward', 'right')(self.frames[idx].actor_by_id(self.ego_id))
+        view_matrix = np.array([
+            *right[:2], *up[:2],
+            -right[:2].dot(self.xy[idx]),
+            -up[:2].dot(self.xy[idx])
+        ]).reshape(3,2)
 
         points = np.stack(points)
-        view_matrix = self.get_view_matrix(self.world_map, self.frames[idx], []).reshape(3,2)
-        xy = np.concatenate([points[:,:2], np.ones((points.shape[0],1))], axis=-1)
-        points[:,:2] = xy @ view_matrix
+        points[:,:2] = np.concatenate([points[:,:2], np.ones((points.shape[0],1))], axis=-1) @ view_matrix
         points = torch.as_tensor(points, dtype=torch.float)
+
+        # relative orientation to ego-vehicle
+        points[:,2] = ((points[:,2] - self.rot[idx]) + (2*np.pi)) % (2*np.pi) # [0, 2pi]
 
         waypoints = np.concatenate([
             self.xy[idx+GAP:idx+(GAP*(STEPS+1)):GAP],
             np.ones((STEPS, 1))], axis=-1)
-        waypoints = waypoints @ view_matrix.reshape(3,2)
-        waypoints = torch.as_tensor(waypoints, dtype=torch.float)
+        waypoints = torch.as_tensor(waypoints @ view_matrix, dtype=torch.float)
 
         # TODO: action (see LbC)
         turn = np.arctan2(*waypoints[-1])
@@ -118,42 +130,47 @@ class PointDataset(Dataset):
         elif turn > 0.20:
             action = 3 # RIGHT
 
-        # TODO: velocity (see LbC)
-        velocity = np.linalg.norm((self.xy[idx]-self.xy[idx-1]) if idx > 0 else self.xy[idx+1]-self.xy[idx])
+        return points, action, waypoints
 
-        return points, action, velocity, waypoints
+    def get_point(self, actor):
+        out = np.empty(5)
+        out[:2] = actor.location[:2]
+        out[2] = actor.rotation[2]
 
-    def _get_class(self, actor):
         if actor.type == 1: # vehicle
-            return 0 if actor.id == self.ego_id else 6
+            c = 0 if actor.id == self.ego_id else 6
+            s = np.linalg.norm(actor.linear_velocity)
         elif actor.type == 2: # pedestrian
-            return 7
+            c = 7
+            s = np.linalg.norm(actor.linear_velocity)
         elif actor.type == 3: # traffic light
-            return actor.state + 3
+            c = actor.state + 3
+            s = 0
+        else:
+            return None
 
-        return None
+        out[3] = s
+        out[-1] = c
+
+        return out
+
 
 
 font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
-def visualize_birdview(points, action, waypoints, _waypoints=None, h=100, r=0.5, w_r=0.5):
-    def _scale_points(points):
-        return (points + torch.Tensor([1.0,1.0,0.0])) * torch.Tensor([h//2,h//2,1])
-    def _scale_waypoints(waypoints):
-        return (waypoints + 1.0) * (h//2)
-
+def visualize_birdview(points, action, waypoints, _waypoints=None, h=MAP_SIZE, r=0.5, w_r=0.5):
     canvas = np.zeros((h, h, 3), dtype=np.uint8)
     canvas[...] = BACKGROUND
     canvas = Image.fromarray(canvas)
     draw = ImageDraw.Draw(canvas)
 
-    for x, y, c in _scale_points(points):
-        draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=COLORS[int(c.item())])
+    for i, (x, y) in enumerate(points[:,:2] + (h//2)):
+        draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=COLORS[int(points[i,-1].item())])
 
-    for x, y in _scale_waypoints(waypoints):
+    for x, y in waypoints + (h//2):
         draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=(0, 175, 0))
 
     if _waypoints is not None:
-        for x, y in _scale_waypoints(_waypoints):
+        for x, y in _waypoints + (h//2):
             draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=(175, 0, 0))
 
     draw.text((0, 0), ACTIONS[action], fill='black', font=font)
@@ -165,13 +182,12 @@ if __name__ == '__main__':
     import cv2
     from .const import BACKGROUND, COLORS, ACTIONS
     from PIL import Image, ImageDraw, ImageFont
-    #import matplotlib.pyplot as plt
 
     data = PointDataset(sys.argv[1])
     for i in range(len(data)):
-        points, action, velocity, waypoints = data[i]
+        points, action, waypoints = data[i]
 
-        canvas = visualize_birdview(points, action, waypoints, h=200, r=1.0)
+        canvas = visualize_birdview(points, action, waypoints, r=1.0)
         cv2.namedWindow('map', cv2.WINDOW_NORMAL)
         cv2.imshow('map', cv2.cvtColor(np.array(canvas), cv2.COLOR_BGR2RGB))
         cv2.resizeWindow('map', 400, 400)
