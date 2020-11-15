@@ -194,11 +194,11 @@ def visualize_birdview(points, action, waypoints, _waypoints=None, h=MAP_SIZE, r
         draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=COLORS[int(points[i,-1].item())])
 
     for x, y in waypoints + (h//2):
-        draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=(0, 175, 0))
+        draw.ellipse((x - w_r, h-y - w_r, x + w_r, h-y + w_r), fill=(0, 175, 0))
 
     if _waypoints is not None:
         for x, y in _waypoints + (h//2):
-            draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=(175, 0, 0))
+            draw.ellipse((x - w_r, h-y - w_r, x + w_r, h-y + w_r), fill=(175, 0, 0))
 
     draw.text((0, 0), ACTIONS[action], fill='black', font=font)
     return canvas

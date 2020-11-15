@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from .const import HEIGHT, WIDTH, C
+from .const import COLORS
 from .util import _get_clones
 
 
@@ -130,17 +130,17 @@ class AttentivePolicy(nn.Module):
         self.hidden_size = hidden_size
         self.steps = steps
 
-        self.class_embedding = nn.Parameter(torch.empty(C+1, hidden_size//2))
+        self.class_embedding = nn.Parameter(torch.empty(len(COLORS), hidden_size))
         stdv = 1./math.sqrt(hidden_size)
         self.class_embedding.data.uniform_(-stdv, stdv)
 
         self.positional_encoding = nn.Sequential(
-            nn.Linear(2, hidden_size//4),
+            nn.Linear(4, hidden_size//2),
             nn.ReLU(),
-            nn.Linear(hidden_size//4, hidden_size//2)
+            nn.Linear(hidden_size//2, hidden_size)
         )
 
-        encoder_layer = TransformerEncoderLayer(hidden_size//2, nhead)
+        encoder_layer = TransformerEncoderLayer(hidden_size, nhead)
         self.transformer = TransformerEncoder(encoder_layer, num_layers)
 
         # action conditioned
@@ -152,37 +152,37 @@ class AttentivePolicy(nn.Module):
             ) for _ in range(4)
         ])
 
-    def forward(self, M_pad, M_mask, action, velocity):
+    def forward(self, M_pad, M_mask, action):
         """
         M : map, (N x 3)
         """
 
         # construct inputs. NOTE: cat or sum?
-        pos = self.positional_encoding(M_pad[..., :2])
-        c = self.class_embedding[M_pad[..., 2].long()]
+        pos = self.positional_encoding(M_pad[..., :4])
+        c = self.class_embedding[M_pad[..., -1].long()]
         x = pos + c #torch.cat([pos, c], dim=-1)
         ego, other = x[:,:1], x[:,1:]
 
         attn = self.transformer(ego, other, M_mask)[:,0]
 
         # velocity late-fusion, like in LbC
-        fusion = torch.cat([attn, velocity.repeat(1, self.hidden_size//2)], dim=1)
+        #fusion = torch.cat([attn, velocity.repeat(1, self.hidden_size//2)], dim=1)
 
         # extract waypoints
         out = torch.empty((action.shape[0], self.steps, 2)).to(self.class_embedding.device)
         for a in action.long().unique():
-            out[action==a] = self.extract[a](fusion[action==a]).reshape(-1, self.steps, 2)
+            out[action==a] = self.extract[a](attn[action==a]).reshape(-1, self.steps, 2)
 
         return out
 
 
 if __name__ == '__main__':
     net = AttentivePolicy().cuda()
-    M_pad = torch.rand((4,250,3)).cuda()
+    M_pad = torch.rand((4,250,5)).cuda()
     M_mask = torch.ones((4,250), dtype=torch.bool).cuda()
     velocity = torch.Tensor([1.5, 2.5, 3.5, 4.5]).unsqueeze(dim=1).cuda()
     M_mask[0,150:] = 0
     M_mask[1,200:] = 0
     M_mask[2,225:] = 0
 
-    net(M_pad, M_mask, torch.Tensor([0,0,0,0]), velocity)
+    net(M_pad, M_mask, torch.Tensor([0,0,0,0]))#, velocity)

@@ -24,7 +24,7 @@ def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoi
 
     images = [(
         loss_batch[i].mean().item(),
-        torch.ByteTensor(np.uint8(visualize_birdview(points[mask_batch[i]], action_batch[i].item(), waypoints_batch[i], _waypoints_batch[i], w_r=1.5)).transpose(2,0,1))
+        torch.ByteTensor(np.uint8(visualize_birdview(points[mask_batch[i]], action_batch[i].item(), waypoints_batch[i], _waypoints_batch[i], r=1.0, w_r=2.0)).transpose(2,0,1))
     ) for i, points in enumerate(points_batch.cpu())]
     images.sort(key=lambda x: x[0], reverse=True)
 
@@ -44,14 +44,13 @@ def train_or_eval(net, data, optim, is_train, config):
 
     tick = time.time()
     iterator = tqdm.tqdm(data, desc=desc, total=len(data), position=1, leave=None)
-    for i, (M_pad, M_mask, action, velocity, waypoints) in enumerate(iterator):
+    for i, (M_pad, M_mask, action, waypoints) in enumerate(iterator):
         M_pad = M_pad.to(config['device'])
         M_mask = M_mask.to(config['device'])
         action = action.to(config['device'])
-        velocity = velocity.to(config['device'])
         waypoints = waypoints.to(config['device'])
 
-        _waypoints = net(M_pad, M_mask, action, velocity)
+        _waypoints = net(M_pad, M_mask, action)
         loss = criterion(_waypoints, waypoints)
         loss_mean = loss.mean()
 
