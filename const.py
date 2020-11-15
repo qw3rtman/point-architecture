@@ -15,4 +15,5 @@ COLORS = [
     (220, 20, 60)     # pedestrian
 ]
 
-ACTIONS = ['S', 'F', 'L', 'R']
+#ACTIONS = ['X', 'S', 'L', 'R']
+ACTIONS = ['F', 'R', 'L', 'S']

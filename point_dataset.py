@@ -1,6 +1,7 @@
 from pathlib import Path
 from itertools import repeat
 from operator import attrgetter
+import json
 
 import numpy as np
 import torch
@@ -10,17 +11,15 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 from PIL import Image, ImageDraw, ImageFont
 
-from .const import GAP, STEPS
-from .util import rotate_origin_only, BACKGROUND, COLORS, ACTIONS
+from .const import GAP, STEPS, BACKGROUND, COLORS, ACTIONS
 
 import sys
 sys.path.append('/u/nimit/Documents/robomaster/point_policy')
 from point.recording import parse
 parse_recording = memory.cache(parse)
-from point.visualization import follow_view_matrix
 
 
-MAP_SIZE = 75
+MAP_SIZE = 150
 
 def pad_collate(batch):
     M, a, w = zip(*batch)
@@ -77,7 +76,9 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
 class PointDataset(Dataset):
 
     def __init__(self, dataset_dir):
-        self.world_map, self.frames = parse_recording(dataset_dir)
+        self.dataset_dir = Path(dataset_dir)
+
+        self.world_map, self.frames = parse_recording(self.dataset_dir/'recording.log')
         self.frames = self.frames[::10] # 20 FPS -> 2 Hz
         self.ego_uid, self.ego_id = attrgetter('uid', 'id')(self.frames[0].cars[0])
 
@@ -96,11 +97,12 @@ class PointDataset(Dataset):
     def __getitem__(self, idx):
         points = []
         for actor in self.frames[idx].actors:
-            if np.max(np.abs(actor.location[:2] - self.xy[idx])) < MAP_SIZE:
+            if np.max(np.abs(actor.location[:2] - self.xy[idx])) <= MAP_SIZE/2:
                 point = self.get_point(actor)
                 if point is not None:
                     points.append(point)
 
+        points = np.stack(points)
         up, right = attrgetter('forward', 'right')(self.frames[idx].actor_by_id(self.ego_id))
         view_matrix = np.array([
             *right[:2], *up[:2],
@@ -108,19 +110,24 @@ class PointDataset(Dataset):
             -up[:2].dot(self.xy[idx])
         ]).reshape(3,2)
 
-        points = np.stack(points)
+        # rotate
         points[:,:2] = np.concatenate([points[:,:2], np.ones((points.shape[0],1))], axis=-1) @ view_matrix
-        points = torch.as_tensor(points, dtype=torch.float)
 
         # relative orientation to ego-vehicle
+        points[:,2] = np.deg2rad(points[:,2]) + np.pi
         points[:,2] = ((points[:,2] - self.rot[idx]) + (2*np.pi)) % (2*np.pi) # [0, 2pi]
+
+        points = torch.as_tensor(points, dtype=torch.float)
 
         waypoints = np.concatenate([
             self.xy[idx+GAP:idx+(GAP*(STEPS+1)):GAP],
             np.ones((STEPS, 1))], axis=-1)
         waypoints = torch.as_tensor(waypoints @ view_matrix, dtype=torch.float)
 
-        # TODO: action (see LbC)
+        with open(self.dataset_dir / f'measurements/{idx:04}.json', 'r') as f:
+            action = int(json.load(f)['command']) - 1
+
+        """ NOTE: old method for getting action/command
         turn = np.arctan2(*waypoints[-1])
         action = 1 # FORWARD
         if np.linalg.norm(waypoints[-1]) < 0.05:
@@ -129,6 +136,7 @@ class PointDataset(Dataset):
             action = 2 # LEFT
         elif turn > 0.20:
             action = 3 # RIGHT
+        """
 
         return points, action, waypoints
 
@@ -192,7 +200,7 @@ if __name__ == '__main__':
         cv2.imshow('map', cv2.cvtColor(np.array(canvas), cv2.COLOR_BGR2RGB))
         cv2.resizeWindow('map', 400, 400)
 
-        cv2.waitKey(10)
+        cv2.waitKey(0)
 
         """
         plt.scatter(*points[:,:2].T, s=5, c=points[:,2])
