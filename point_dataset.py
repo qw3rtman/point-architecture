@@ -1,5 +1,5 @@
 from pathlib import Path
-from itertools import repeat
+from itertools import repeat, chain
 from operator import attrgetter
 import json
 
@@ -11,7 +11,8 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 from PIL import Image, ImageDraw, ImageFont
 
-from .const import GAP, STEPS, BACKGROUND, COLORS, ACTIONS
+from .const import GAP, STEPS, BACKGROUND, COLORS, ACTIONS, LANDMARKS
+from .util import to_meters_per_second
 
 import sys
 sys.path.append('/u/nimit/Documents/robomaster/point_policy')
@@ -82,6 +83,9 @@ class PointDataset(Dataset):
         self.frames = self.frames[::10] # 20 FPS -> 2 Hz
         self.ego_uid, self.ego_id = attrgetter('uid', 'id')(self.frames[0].cars[0])
 
+        self.waypoints = self.world_map.generate_waypoints(20)
+        self.landmarks = chain(*[self.world_map.get_all_landmarks_of_type(t) for t in LANDMARKS.keys()])
+
         self.xy = np.empty((len(self.frames), 2))
         self.rot = np.empty(len(self.frames))
         for idx, frame in enumerate(self.frames):
@@ -96,11 +100,26 @@ class PointDataset(Dataset):
 
     def __getitem__(self, idx):
         points = []
+
+        # dynamic agents (vehicles, pedestrians)
         for actor in self.frames[idx].actors:
             if np.max(np.abs(actor.location[:2] - self.xy[idx])) <= MAP_SIZE/2:
-                point = self.get_point(actor)
+                point = self.get_actor_point(actor)
                 if point is not None:
                     points.append(point)
+
+        # driving waypoints (road)
+        for waypoint in self.waypoints:
+            location = attrgetter('x','y')(waypoint.transform.location)
+            if np.max(np.abs(location - self.xy[idx])) <= MAP_SIZE/2:
+                points.append(np.array([*location, waypoint.transform.rotation.yaw, 0.0, 0]))
+
+        # landmarks (signs)
+        for landmark in self.landmarks:
+            location = attrgetter('x','y')(landmark.transform.location)
+            if np.max(np.abs(location - self.xy[idx])) <= MAP_SIZE/2:
+                v = to_meters_per_second(landmark.value, landmark.unit) if landmark.type == '274' else 0.0
+                point = np.array([*location, landmark.transform.rotation.yaw, v, LANDMARKS[landmark.type]])
 
         points = np.stack(points)
         up, right = attrgetter('forward', 'right')(self.frames[idx].actor_by_id(self.ego_id))
@@ -140,19 +159,19 @@ class PointDataset(Dataset):
 
         return points, action, waypoints
 
-    def get_point(self, actor):
+    def get_actor_point(self, actor):
         out = np.empty(5)
         out[:2] = actor.location[:2]
         out[2] = actor.rotation[2]
 
         if actor.type == 1: # vehicle
-            c = 0 if actor.id == self.ego_id else 6
+            c = 1 if actor.id == self.ego_id else 2
             s = np.linalg.norm(actor.linear_velocity)
         elif actor.type == 2: # pedestrian
-            c = 7
+            c = 3
             s = np.linalg.norm(actor.linear_velocity)
         elif actor.type == 3: # traffic light
-            c = actor.state + 3
+            c = actor.state + 4
             s = 0
         else:
             return None
@@ -194,6 +213,7 @@ if __name__ == '__main__':
     data = PointDataset(sys.argv[1])
     for i in range(len(data)):
         points, action, waypoints = data[i]
+        print(points.shape[0])
 
         canvas = visualize_birdview(points, action, waypoints, r=1.0)
         cv2.namedWindow('map', cv2.WINDOW_NORMAL)

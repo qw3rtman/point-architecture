@@ -48,3 +48,9 @@ def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoi
     images.sort(key=lambda x: x[0], reverse=True)
 
     return make_grid([x[1] for x in images[:32]], nrow=4).numpy().transpose(1,2,0)
+
+def to_meters_per_second(value, unit):
+    if unit == 'mph':
+        return (1609.34 * value) / (60 * 60)
+    elif unit == 'kmh':
+        return (1000.00 * value) / (60 * 60)
