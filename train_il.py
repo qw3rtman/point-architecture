@@ -138,7 +138,7 @@ if __name__ == '__main__':
 
     parsed = parser.parse_args()
 
-    keys = ['hidden_size', 'lr', 'weight_decay', 'batch_size', 'description']
+    keys = ['batch_size', 'hidden_size', 'num_layers', 'num_heads', 'lr', 'weight_decay', 'description']
     run_name  = '_'.join(str(getattr(parsed, x)) for x in keys)
 
     checkpoint_dir = parsed.checkpoint_dir / run_name

@@ -12,15 +12,14 @@ from torch.nn.utils.rnn import pad_sequence
 from PIL import Image, ImageDraw, ImageFont
 
 from .const import GAP, STEPS, BACKGROUND, COLORS, ACTIONS, LANDMARKS
-from .util import to_meters_per_second
+from .util import to_meters_per_second, rotate_origin_only
 
 import sys
 sys.path.append('/u/nimit/Documents/robomaster/point_policy')
 from point.recording import parse
-parse_recording = memory.cache(parse)
 
 
-MAP_SIZE = 150
+MAP_SIZE = 100
 
 def pad_collate(batch):
     M, a, w = zip(*batch)
@@ -61,17 +60,23 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
 
         episodes = list((Path(dataset_dir) / train_or_val).glob('*'))
         for i, _dataset_dir in enumerate(episodes):
-            data.append(PointDataset(str(_dataset_dir), **kwargs))
+            if _dataset_dir.is_dir():
+                data.append(get_episode(str(_dataset_dir)))
 
-            if i % 5 == 0:
-                print(f'{i} episodes')
+                if i % 5 == 0:
+                    print(f'{i} episodes')
 
-        return Wrap(data, batch_size, 250 if train_or_val == 'train' else 25, num_workers)
+        return Wrap(data, batch_size, 250 if train_or_val == 'training' else 25, num_workers)
 
-    train = make_dataset('train')
-    val = make_dataset('val')
+    train = make_dataset('training')
+    val = make_dataset('testing')
 
     return train, val
+
+
+@memory.cache()
+def get_episode(episode_dir):
+    return PointDataset(str(episode_dir))
 
 
 class PointDataset(Dataset):
@@ -79,12 +84,12 @@ class PointDataset(Dataset):
     def __init__(self, dataset_dir):
         self.dataset_dir = Path(dataset_dir)
 
-        self.world_map, self.frames = parse_recording(self.dataset_dir/'recording.log')
+        self.world_map, self.frames = parse(self.dataset_dir/'recording.log')
         self.frames = self.frames[::10] # 20 FPS -> 2 Hz
         self.ego_uid, self.ego_id = attrgetter('uid', 'id')(self.frames[0].cars[0])
 
-        self.waypoints = self.world_map.generate_waypoints(20)
-        self.landmarks = chain(*[self.world_map.get_all_landmarks_of_type(t) for t in LANDMARKS.keys()])
+        self.map_waypoints = self.world_map.generate_waypoints(2)
+        self.map_landmarks = chain(*[self.world_map.get_all_landmarks_of_type(t) for t in LANDMARKS.keys()])
 
         self.xy = np.empty((len(self.frames), 2))
         self.rot = np.empty(len(self.frames))
@@ -95,10 +100,25 @@ class PointDataset(Dataset):
 
         self.rot = np.deg2rad(self.rot) + np.pi # [0, 2pi]
 
+        # cache frames
+        self.points, self.actions, self.waypoints = [], torch.empty(len(self)), torch.empty(len(self), STEPS, 2)
+        for idx in range(len(self)):
+            _points, _action, _waypoints = self._get_item(idx)
+            self.points.append(_points)
+            self.actions[idx] = _action
+            self.waypoints[idx] = _waypoints
+
+        del self.world_map, self.frames, self.map_waypoints, self.map_landmarks, self.xy, self.rot
+
     def __len__(self):
-        return len(self.frames) - (GAP * (STEPS+1))
+        if hasattr(self, 'frames'):
+            return len(self.frames) - (GAP * (STEPS+1))
+        return len(self.points)
 
     def __getitem__(self, idx):
+        return self.points[idx], self.actions[idx], self.waypoints[idx]
+
+    def _get_item(self, idx):
         points = []
 
         # dynamic agents (vehicles, pedestrians)
@@ -109,17 +129,17 @@ class PointDataset(Dataset):
                     points.append(point)
 
         # driving waypoints (road)
-        for waypoint in self.waypoints:
+        for waypoint in self.map_waypoints:
             location = attrgetter('x','y')(waypoint.transform.location)
             if np.max(np.abs(location - self.xy[idx])) <= MAP_SIZE/2:
-                points.append(np.array([*location, waypoint.transform.rotation.yaw, 0.0, 0]))
+                points.append(np.array([*location, waypoint.transform.rotation.yaw, -1, 0.0, 0]))
 
         # landmarks (signs)
-        for landmark in self.landmarks:
+        for landmark in self.map_landmarks:
             location = attrgetter('x','y')(landmark.transform.location)
             if np.max(np.abs(location - self.xy[idx])) <= MAP_SIZE/2:
                 v = to_meters_per_second(landmark.value, landmark.unit) if landmark.type == '274' else 0.0
-                point = np.array([*location, landmark.transform.rotation.yaw, v, LANDMARKS[landmark.type]])
+                point = np.array([*location, landmark.transform.rotation.yaw, -1, v, LANDMARKS[landmark.type]])
 
         points = np.stack(points)
         up, right = attrgetter('forward', 'right')(self.frames[idx].actor_by_id(self.ego_id))
@@ -129,12 +149,14 @@ class PointDataset(Dataset):
             -up[:2].dot(self.xy[idx])
         ]).reshape(3,2)
 
-        # rotate
+        # rotate TODO: sin(theta), cos(theta)
         points[:,:2] = np.concatenate([points[:,:2], np.ones((points.shape[0],1))], axis=-1) @ view_matrix
 
         # relative orientation to ego-vehicle
-        points[:,2] = np.deg2rad(points[:,2]) + np.pi
-        points[:,2] = ((points[:,2] - self.rot[idx]) + (2*np.pi)) % (2*np.pi) # [0, 2pi]
+        orientation = np.deg2rad(points[:,2]) + np.pi - self.rot[idx]
+        points[:,2] = np.cos(orientation)
+        points[:,3] = np.sin(orientation)
+        #points[:,2] = ((points[:,2] - self.rot[idx]) + (2*np.pi)) % (2*np.pi) # [0, 2pi]
 
         points = torch.as_tensor(points, dtype=torch.float)
 
@@ -160,9 +182,10 @@ class PointDataset(Dataset):
         return points, action, waypoints
 
     def get_actor_point(self, actor):
-        out = np.empty(5)
+        out = np.empty(6)
         out[:2] = actor.location[:2]
         out[2] = actor.rotation[2]
+        out[3] = -1
 
         if actor.type == 1: # vehicle
             c = 1 if actor.id == self.ego_id else 2
@@ -176,11 +199,10 @@ class PointDataset(Dataset):
         else:
             return None
 
-        out[3] = s
+        out[4] = s
         out[-1] = c
 
         return out
-
 
 
 font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
@@ -191,7 +213,8 @@ def visualize_birdview(points, action, waypoints, _waypoints=None, h=MAP_SIZE, r
     draw = ImageDraw.Draw(canvas)
 
     for i, (x, y) in enumerate(points[:,:2] + (h//2)):
-        draw.ellipse((x - r, h-y - r, x + r, h-y + r), fill=COLORS[int(points[i,-1].item())])
+        R = w_r if points[i,-1].item() == 0 else r
+        draw.ellipse((x - R, h-y - R, x + R, h-y + R), fill=COLORS[int(points[i,-1].item())])
 
     for x, y in waypoints + (h//2):
         draw.ellipse((x - w_r, h-y - w_r, x + w_r, h-y + w_r), fill=(0, 175, 0))
@@ -200,15 +223,13 @@ def visualize_birdview(points, action, waypoints, _waypoints=None, h=MAP_SIZE, r
         for x, y in _waypoints + (h//2):
             draw.ellipse((x - w_r, h-y - w_r, x + w_r, h-y + w_r), fill=(175, 0, 0))
 
-    draw.text((0, 0), ACTIONS[action], fill='black', font=font)
+    draw.text((0, 0), ACTIONS[int(action)], fill='black', font=font)
     return canvas
 
 
 if __name__ == '__main__':
     import sys
     import cv2
-    from .const import BACKGROUND, COLORS, ACTIONS
-    from PIL import Image, ImageDraw, ImageFont
 
     data = PointDataset(sys.argv[1])
     for i in range(len(data)):
@@ -221,11 +242,3 @@ if __name__ == '__main__':
         cv2.resizeWindow('map', 400, 400)
 
         cv2.waitKey(0)
-
-        """
-        plt.scatter(*points[:,:2].T, s=5, c=points[:,2])
-        plt.xlim(-1,1)
-        plt.ylim(-1,1)
-        plt.gca().set_aspect('equal', adjustable='box')
-        plt.show()
-        """

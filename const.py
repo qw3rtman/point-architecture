@@ -21,4 +21,4 @@ LANDMARKS = {
 }
 
 #ACTIONS = ['X', 'S', 'L', 'R']
-ACTIONS = ['F', 'R', 'L', 'S']
+ACTIONS = ['L', 'R', 'S', 'F', 'LL', 'LR']

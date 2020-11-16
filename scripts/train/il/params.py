@@ -5,17 +5,17 @@ from datetime import datetime
 jobs = list()
 unique = datetime.now().strftime("%-m.%d")
 
-for batch_size in [64, 128]:
-    for hidden_size in [128]:
-        for lr in [5e-3, 2e-4]:
-            for weight_decay in [0., 3.8e-7]:
+for batch_size in [1024]:
+    for hidden_size in [32, 64]:
+        for lr in [5e-5, 2e-4]: # smaller is better (5e-3 did not work)
+            for weight_decay in [0.]:
                 job = f"""PYTHONHASHSEED=0 python -m consistency.train_il \\
     --description {unique}-v1 \\
     --max_epoch 500 \\
     --checkpoint_dir /scratch/cluster/nimit/checkpoints \\
     --dataset_dir /scratch/cluster/nimit/data/carla \\
     --hidden_size {hidden_size} \\
-    --num_layers 12 \\
+    --num_layers 6 \\
     --num_heads 8 \\
     --batch_size {batch_size} \\
     --lr {lr} \\

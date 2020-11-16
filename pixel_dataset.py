@@ -17,7 +17,6 @@ from .util import rotate_origin_only
 np.random.seed(0)
 torch.manual_seed(0)
 
-CROP_SIZE = 192
 MAP_SIZE = 320
 
 def pad_collate(batch):

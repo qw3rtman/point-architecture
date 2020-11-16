@@ -56,7 +56,7 @@ class TransformerEncoderLayer(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(d_model, 2048),
             nn.ReLU(True),
-            nn.Dropout(),
+            nn.Dropout(0.1),
             nn.Linear(2048, d_model))
 
         self.dropout1 = nn.Dropout(0.1)
@@ -135,7 +135,7 @@ class AttentivePolicy(nn.Module):
         self.class_embedding.data.uniform_(-stdv, stdv)
 
         self.positional_encoding = nn.Sequential(
-            nn.Linear(4, hidden_size//2),
+            nn.Linear(5, hidden_size//2),
             nn.ReLU(),
             nn.Linear(hidden_size//2, hidden_size)
         )
@@ -149,7 +149,7 @@ class AttentivePolicy(nn.Module):
                 nn.Linear(hidden_size, hidden_size//2),
                 nn.ReLU(),
                 nn.Linear(hidden_size//2, steps*2)
-            ) for _ in range(4)
+            ) for _ in range(6)
         ])
 
     def forward(self, M_pad, M_mask, action):
@@ -158,10 +158,10 @@ class AttentivePolicy(nn.Module):
         """
 
         # construct inputs. NOTE: cat or sum?
-        pos = self.positional_encoding(M_pad[..., :4])
+        pos = self.positional_encoding(M_pad[..., :5])
         c = self.class_embedding[M_pad[..., -1].long()]
         x = pos + c #torch.cat([pos, c], dim=-1)
-        ego, other = x[:,:1], x[:,1:]
+        ego, other = x[:,:1], x[:,1:] # TODO: bug!!!!
 
         attn = self.transformer(ego, other, M_mask)[:,0]
 
@@ -178,8 +178,8 @@ class AttentivePolicy(nn.Module):
 
 if __name__ == '__main__':
     net = AttentivePolicy().cuda()
-    M_pad = torch.rand((4,250,5)).cuda()
-    M_mask = torch.ones((4,250), dtype=torch.bool).cuda()
+    M_pad = torch.rand((5,250,5)).cuda()
+    M_mask = torch.ones((5,250), dtype=torch.bool).cuda()
     velocity = torch.Tensor([1.5, 2.5, 3.5, 4.5]).unsqueeze(dim=1).cuda()
     M_mask[0,150:] = 0
     M_mask[1,200:] = 0
