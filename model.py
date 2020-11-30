@@ -154,14 +154,16 @@ class AttentivePolicy(nn.Module):
 
     def forward(self, M_pad, M_mask, action):
         """
-        M : map, (N x 3)
+        M : map, (B x N x 6)
         """
 
         # construct inputs. NOTE: cat or sum?
-        pos = self.positional_encoding(M_pad[..., :5])
+        pos = self.positional_encoding(M_pad[..., :5]) # (B x N x 5) -> (B x N x H)
         c = self.class_embedding[M_pad[..., -1].long()]
         x = pos + c #torch.cat([pos, c], dim=-1)
-        ego, other = x[:,:1], x[:,1:] # TODO: bug!!!!
+
+        ego = x[M_pad[...,-1]==1].reshape(M_pad.shape[0], -1, self.hidden_size)
+        other = x[M_pad[...,-1]!=1].reshape(M_pad.shape[0], -1, self.hidden_size)
 
         attn = self.transformer(ego, other, M_mask)[:,0]
 

@@ -149,7 +149,6 @@ class PointDataset(Dataset):
             -up[:2].dot(self.xy[idx])
         ]).reshape(3,2)
 
-        # rotate TODO: sin(theta), cos(theta)
         points[:,:2] = np.concatenate([points[:,:2], np.ones((points.shape[0],1))], axis=-1) @ view_matrix
 
         # relative orientation to ego-vehicle
