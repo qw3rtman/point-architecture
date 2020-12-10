@@ -24,7 +24,7 @@ def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoi
 
     images = [(
         loss_batch[i].mean().item(),
-        torch.ByteTensor(np.uint8(visualize_birdview(points[mask_batch[i]], action_batch[i].item(), waypoints_batch[i], _waypoints_batch[i], r=1.0, w_r=2.0)).transpose(2,0,1))
+        torch.ByteTensor(np.uint8(visualize_birdview(points[mask_batch[i]], action_batch[i].item(), waypoints_batch[i], _waypoints_batch[i], r=1.0)).transpose(2,0,1))
     ) for i, points in enumerate(points_batch.cpu())]
     images.sort(key=lambda x: x[0], reverse=True)
 

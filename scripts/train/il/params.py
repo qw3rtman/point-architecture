@@ -11,7 +11,7 @@ for batch_size in [1024]:
             for weight_decay in [0.]:
                 job = f"""PYTHONHASHSEED=0 python -m consistency.train_il \\
     --description {unique}-v1 \\
-    --max_epoch 500 \\
+    --max_epoch 2000 \\
     --checkpoint_dir /scratch/cluster/nimit/checkpoints \\
     --dataset_dir /scratch/cluster/nimit/data/carla \\
     --hidden_size {hidden_size} \\

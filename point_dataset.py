@@ -1,6 +1,7 @@
 from pathlib import Path
 from itertools import repeat, chain
 from operator import attrgetter
+import random
 import json
 
 import numpy as np
@@ -11,15 +12,13 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 from PIL import Image, ImageDraw, ImageFont
 
-from .const import GAP, STEPS, BACKGROUND, COLORS, ACTIONS, LANDMARKS
+from .const import MAP_SIZE, GAP, STEPS, BACKGROUND, COLORS, ACTIONS, LANDMARKS
 from .util import to_meters_per_second, rotate_origin_only
 
 import sys
 sys.path.append('/u/nimit/Documents/robomaster/point_policy')
 from point.recording import parse
 
-
-MAP_SIZE = 100
 
 def pad_collate(batch):
     M, a, w = zip(*batch)
@@ -59,6 +58,7 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
         data = list()
 
         episodes = list((Path(dataset_dir) / train_or_val).glob('*'))
+        random.shuffle(episodes)
         for i, _dataset_dir in enumerate(episodes):
             if _dataset_dir.is_dir():
                 data.append(get_episode(str(_dataset_dir)))
@@ -74,7 +74,7 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
     return train, val
 
 
-@memory.cache()
+#@memory.cache()
 def get_episode(episode_dir):
     return PointDataset(str(episode_dir))
 
@@ -98,7 +98,7 @@ class PointDataset(Dataset):
             self.xy[idx] = ego.location[:2]
             self.rot[idx] = ego.rotation[2]
 
-        self.rot = np.deg2rad(self.rot) + np.pi # [0, 2pi]
+        self.rot = np.deg2rad(self.rot)
 
         # cache frames
         self.points, self.actions, self.waypoints = [], torch.empty(len(self)), torch.empty(len(self), STEPS, 2)
@@ -152,10 +152,9 @@ class PointDataset(Dataset):
         points[:,:2] = np.concatenate([points[:,:2], np.ones((points.shape[0],1))], axis=-1) @ view_matrix
 
         # relative orientation to ego-vehicle
-        orientation = np.deg2rad(points[:,2]) + np.pi - self.rot[idx]
+        orientation = np.deg2rad(points[:,2]) - self.rot[idx]
         points[:,2] = np.cos(orientation)
         points[:,3] = np.sin(orientation)
-        #points[:,2] = ((points[:,2] - self.rot[idx]) + (2*np.pi)) % (2*np.pi) # [0, 2pi]
 
         points = torch.as_tensor(points, dtype=torch.float)
 
@@ -166,17 +165,6 @@ class PointDataset(Dataset):
 
         with open(self.dataset_dir / f'measurements/{idx:04}.json', 'r') as f:
             action = int(json.load(f)['command']) - 1
-
-        """ NOTE: old method for getting action/command
-        turn = np.arctan2(*waypoints[-1])
-        action = 1 # FORWARD
-        if np.linalg.norm(waypoints[-1]) < 0.05:
-            action = 0 # STOP
-        elif turn < -0.20:
-            action = 2 # LEFT
-        elif turn > 0.20:
-            action = 3 # RIGHT
-        """
 
         return points, action, waypoints
 
@@ -204,6 +192,35 @@ class PointDataset(Dataset):
         return out
 
 
+def step(points, waypoints, j):
+    """
+    step to waypoints[i] for j = 1,...,STEPS
+    TODO: make sure differentiable
+    """
+    dx, dy = waypoints[j] - waypoints[j-1]
+    heading = (torch.atan2(dy, dx) - (np.pi/2)) if dx > 0 and dy > 0 else 0.
+    print(heading)
+
+    xy = points[:,:2].clone()
+    xy[points[:,-1] != 1] -= waypoints[j]
+
+    orientation = torch.atan2(*points[:,[3,2]].T)-(np.pi/2) - heading
+
+    c, s = np.cos(-heading), np.sin(-heading)
+    R = torch.Tensor([[c, -s], [s, c]]).T
+
+    _points = torch.cat([
+        torch.mm(xy, R),
+        torch.cos(orientation).unsqueeze(dim=-1),
+        torch.sin(orientation).unsqueeze(dim=-1),
+        points[:,4:]
+    ], dim=-1)
+
+    _waypoints = torch.mm(waypoints[j:]-waypoints[j], R)
+
+    return _points, _waypoints
+
+
 font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
 def visualize_birdview(points, action, waypoints, _waypoints=None, h=MAP_SIZE, r=0.5, w_r=0.5):
     canvas = np.zeros((h, h, 3), dtype=np.uint8)
@@ -214,6 +231,10 @@ def visualize_birdview(points, action, waypoints, _waypoints=None, h=MAP_SIZE, r
     for i, (x, y) in enumerate(points[:,:2] + (h//2)):
         R = w_r if points[i,-1].item() == 0 else r
         draw.ellipse((x - R, h-y - R, x + R, h-y + R), fill=COLORS[int(points[i,-1].item())])
+
+        if points[i,-1].item() != 0:
+            heading = np.rad2deg(np.arctan2(*points[i,[3,2]])-(np.pi/2))
+            draw.arc(xy=(x - 3, h-y - 3, x + 3, h-y + 3), start=heading-90, end=heading+90, width=1, fill=COLORS[int(points[i,-1].item())])
 
     for x, y in waypoints + (h//2):
         draw.ellipse((x - w_r, h-y - w_r, x + w_r, h-y + w_r), fill=(0, 175, 0))
@@ -231,13 +252,27 @@ if __name__ == '__main__':
     import cv2
 
     data = PointDataset(sys.argv[1])
-    for i in range(len(data)):
-        points, action, waypoints = data[i]
-        print(points.shape[0])
+
+    i = 0; j = 1
+    while True:
+        _points, action, _waypoints = data[i]
+        points, waypoints = step(_points, _waypoints, j)
 
         canvas = visualize_birdview(points, action, waypoints, r=1.0)
         cv2.namedWindow('map', cv2.WINDOW_NORMAL)
         cv2.imshow('map', cv2.cvtColor(np.array(canvas), cv2.COLOR_BGR2RGB))
         cv2.resizeWindow('map', 400, 400)
 
-        cv2.waitKey(0)
+        k = cv2.waitKey(0)
+        if k == 100:   # d
+            i = min(i+1,len(data)-1)
+        elif k == 97: # a
+            i = max(i-1,0)
+        elif k == 113: # q
+            break
+        elif k == 119: # w
+            j = min(j+1,4)
+        elif k == 115: # s
+            j = max(j-1,1)
+        else:
+            continue

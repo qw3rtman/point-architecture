@@ -7,8 +7,8 @@ cd $HOME/Documents/robomaster
 conda env list
 conda activate /scratch/cluster/nimit/miniconda3/envs/robo
 PYTHONHASHSEED=0 python -m consistency.train_il \
-    --description 11.29-v1 \
-    --max_epoch 500 \
+    --description 12.04-v1 \
+    --max_epoch 2000 \
     --checkpoint_dir /scratch/cluster/nimit/checkpoints \
     --dataset_dir /scratch/cluster/nimit/data/carla \
     --hidden_size 32 \
