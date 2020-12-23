@@ -123,7 +123,7 @@ class PointDataset(Dataset):
 
         # dynamic agents (vehicles, pedestrians)
         for actor in self.frames[idx].actors:
-            if np.max(np.abs(actor.location[:2] - self.xy[idx])) <= MAP_SIZE/2:
+            if np.max(np.abs(actor.location[:2] - self.xy[idx])) <= MAP_SIZE:
                 point = self.get_actor_point(actor)
                 if point is not None:
                     points.append(point)
@@ -131,13 +131,13 @@ class PointDataset(Dataset):
         # driving waypoints (road)
         for waypoint in self.map_waypoints:
             location = attrgetter('x','y')(waypoint.transform.location)
-            if np.max(np.abs(location - self.xy[idx])) <= MAP_SIZE/2:
+            if np.max(np.abs(location - self.xy[idx])) <= MAP_SIZE:
                 points.append(np.array([*location, waypoint.transform.rotation.yaw, -1, 0.0, 0]))
 
         # landmarks (signs)
         for landmark in self.map_landmarks:
             location = attrgetter('x','y')(landmark.transform.location)
-            if np.max(np.abs(location - self.xy[idx])) <= MAP_SIZE/2:
+            if np.max(np.abs(location - self.xy[idx])) <= MAP_SIZE:
                 v = to_meters_per_second(landmark.value, landmark.unit) if landmark.type == '274' else 0.0
                 point = np.array([*location, landmark.transform.rotation.yaw, -1, v, LANDMARKS[landmark.type]])
 
@@ -183,6 +183,7 @@ class PointDataset(Dataset):
         elif actor.type == 3: # traffic light
             c = actor.state + 4
             s = 0
+            out[2] += 90 # orient toward relevant traffic
         else:
             return None
 
@@ -194,27 +195,31 @@ class PointDataset(Dataset):
 
 def step(points, waypoints, j):
     """
-    step to waypoints[i] for j = 1,...,STEPS
-    TODO: make sure differentiable
+    step to waypoints[i] for j = 0,...,STEPS-1
     """
-    dx, dy = waypoints[j] - waypoints[j-1]
-    heading = (torch.atan2(dy, dx) - (np.pi/2)) if dx > 0 and dy > 0 else 0.
-    print(heading)
+    if j == 0:
+        return points, waypoints
+
+    dx, dy = waypoints[j] - waypoints[max(0,j-1)]
+    movement = np.abs(dx) >= 1e-2 and np.abs(dy) >= 1e-2
+    heading = (torch.atan2(dy, dx) - (np.pi/2)) if movement else 0.
 
     xy = points[:,:2].clone()
     xy[points[:,-1] != 1] -= waypoints[j]
 
-    orientation = torch.atan2(*points[:,[3,2]].T)-(np.pi/2) - heading
-
     c, s = np.cos(-heading), np.sin(-heading)
     R = torch.Tensor([[c, -s], [s, c]]).T
 
+    orientation = heading + torch.atan2(*points[:,[3,2]].T)
     _points = torch.cat([
         torch.mm(xy, R),
         torch.cos(orientation).unsqueeze(dim=-1),
         torch.sin(orientation).unsqueeze(dim=-1),
-        points[:,4:]
+        points[:,4:] # velocity, class
     ], dim=-1)
+
+    # ego-vehicle always facing forward
+    _points[_points[:,-1] == 1, [2,3]] = torch.FloatTensor([1., 0.])
 
     _waypoints = torch.mm(waypoints[j:]-waypoints[j], R)
 
@@ -223,10 +228,10 @@ def step(points, waypoints, j):
 
 font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
 def visualize_birdview(points, action, waypoints, _waypoints=None, h=MAP_SIZE, r=0.5, w_r=0.5):
-    canvas = np.zeros((h, h, 3), dtype=np.uint8)
+    canvas = np.zeros((h, h, 4), dtype=np.uint8)
     canvas[...] = BACKGROUND
-    canvas = Image.fromarray(canvas)
-    draw = ImageDraw.Draw(canvas)
+    canvas = Image.fromarray(canvas[...,:3])
+    draw = ImageDraw.Draw(canvas, 'RGBA')
 
     for i, (x, y) in enumerate(points[:,:2] + (h//2)):
         R = w_r if points[i,-1].item() == 0 else r
