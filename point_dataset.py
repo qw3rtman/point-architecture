@@ -20,20 +20,23 @@ import sys
 sys.path.append('/u/nimit/Documents/robomaster/point_policy')
 from point.recording import parse
 
+def get_mask(L):
+    mask = torch.zeros(len(L), max(L), dtype=torch.bool)
+    for i, l in enumerate(L):
+        mask[i,:l] = 1
+    return mask
 
 def pad_collate(batch, diameter):
     M, A, W = zip(*batch)
 
     # prune map to intermediate size, so that step() doesn't get cut off
-    M = [prune(m, 2*diameter) for m in M]
+    # TODO: 2*diameter for step
+    M = [prune(m, diameter) for m in M]
 
-    M_len = [len(m) for m in M]
-    M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.bool)
-    for i, m_len in enumerate(M_len):
-        M_mask[i,:m_len] = 1
+    M_mask = get_mask([len(m) for m in M])
     M_pad = pad_sequence(M, batch_first=True, padding_value=0)
 
-    return M_pad, M_mask, torch.as_tensor(np.stack(a)), torch.as_tensor(np.stack(w))
+    return M_pad, M_mask, torch.as_tensor(np.stack(A)), torch.as_tensor(np.stack(W))
 
 def repeater(loader):
     for loader in repeat(loader):
@@ -115,7 +118,7 @@ class PointDataset(Dataset):
             self.actions[idx] = _action
             self.waypoints[idx] = _waypoints
 
-        del self.world_map, self.frames, self.map_waypoints, self.map_landmarks, self.xy, self.rot
+        del self.world_map, self.frames, self.map_waypoints, self.map_landmarks
 
     def __len__(self):
         if hasattr(self, 'frames'):
@@ -157,6 +160,8 @@ class PointDataset(Dataset):
         ]).reshape(3,2)
 
         points[:,:2] = np.concatenate([points[:,:2], np.ones((points.shape[0],1))], axis=-1) @ view_matrix
+        shift = points[points[:,-1]==1][:,:2].copy()
+        points[:,:2] -= shift
 
         # relative orientation to ego-vehicle
         orientation = np.deg2rad(points[:,2]) - self.rot[idx]
@@ -169,6 +174,7 @@ class PointDataset(Dataset):
             self.xy[idx+GAP:idx+(GAP*(STEPS+1)):GAP],
             np.ones((STEPS, 1))], axis=-1)
         waypoints = torch.as_tensor(waypoints @ view_matrix, dtype=torch.float)
+        waypoints -= shift
 
         with open(self.dataset_dir / f'measurements/{idx:04}.json', 'r') as f:
             action = int(json.load(f)['command']) - 1
@@ -201,7 +207,18 @@ class PointDataset(Dataset):
 
 
 def prune(points, diameter):
-    return points[points[...,:2].abs().max(dim=1)[0] <= diameter/2]
+    # points: N x 6
+    _points = points[points[...,:2].abs().max(dim=1)[0] <= diameter/2]
+    return _points
+
+
+def batched_prune(points, diameter):
+    M = [prune(p, diameter) for p in points]
+
+    M_mask = get_mask([len(m) for m in M])
+    M_pad = pad_sequence(M, batch_first=True, padding_value=0)
+
+    return M_pad, M_mask
 
 
 def step(points, waypoints, j):

@@ -50,9 +50,13 @@ def train_or_eval(net, data, optim, is_train, config):
         action = action.to(config['device'])
         waypoints = waypoints.to(config['device'])
 
+        """
         # prune to consistent map size
-        pruned = prune(points, config['data_args']['map_size'])
-        _waypoints = net(pruned, mask, action)
+        pruned_points, pruned_mask = batched_prune(points, config['data_args']['map_size'])
+        _waypoints = net(pruned_points, pruned_mask, action)
+        """
+        _waypoints = net(points, mask, action)
+
         loss = criterion(_waypoints, waypoints)
         loss_mean = loss.mean()
 
@@ -141,7 +145,7 @@ if __name__ == '__main__':
 
     parsed = parser.parse_args()
 
-    keys = ['batch_size', 'hidden_size', 'num_layers', 'num_heads', 'lr', 'weight_decay', 'description']
+    keys = ['batch_size', 'map_size', 'hidden_size', 'num_layers', 'num_heads', 'lr', 'weight_decay', 'description']
     run_name  = '_'.join(str(getattr(parsed, x)) for x in keys)
 
     checkpoint_dir = parsed.checkpoint_dir / run_name
