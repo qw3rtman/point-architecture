@@ -11,12 +11,12 @@ import torch
 from torchvision.utils import make_grid
 
 from .model import AttentivePolicy
-from .point_dataset import get_dataset, visualize_birdview
+from .point_dataset import get_dataset, prune, step, visualize_birdview
 
 import wandb
 
 
-def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoints_batch, loss_batch):
+def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoints_batch, loss_batch, config):
     mask_batch = mask_batch.cpu()
     action_batch = action_batch.cpu()
     waypoints_batch = waypoints_batch.cpu()
@@ -24,7 +24,7 @@ def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoi
 
     images = [(
         loss_batch[i].mean().item(),
-        torch.ByteTensor(np.uint8(visualize_birdview(points[mask_batch[i]], action_batch[i].item(), waypoints_batch[i], _waypoints_batch[i], r=1.0)).transpose(2,0,1))
+        torch.ByteTensor(np.uint8(visualize_birdview(points[mask_batch[i]], action_batch[i].item(), waypoints_batch[i], _waypoints_batch[i], r=1.0, diameter=config['data_args']['map_size'])).transpose(2,0,1))
     ) for i, points in enumerate(points_batch.cpu())]
     images.sort(key=lambda x: x[0], reverse=True)
 
@@ -44,13 +44,15 @@ def train_or_eval(net, data, optim, is_train, config):
 
     tick = time.time()
     iterator = tqdm.tqdm(data, desc=desc, total=len(data), position=1, leave=None)
-    for i, (M_pad, M_mask, action, waypoints) in enumerate(iterator):
-        M_pad = M_pad.to(config['device'])
-        M_mask = M_mask.to(config['device'])
+    for i, (points, mask, action, waypoints) in enumerate(iterator):
+        points = points.to(config['device'])
+        mask = mask.to(config['device'])
         action = action.to(config['device'])
         waypoints = waypoints.to(config['device'])
 
-        _waypoints = net(M_pad, M_mask, action)
+        # prune to consistent map size
+        pruned = prune(points, config['data_args']['map_size'])
+        _waypoints = net(pruned, mask, action)
         loss = criterion(_waypoints, waypoints)
         loss_mean = loss.mean()
 
@@ -63,9 +65,9 @@ def train_or_eval(net, data, optim, is_train, config):
 
         losses.append(loss_mean.item())
         metrics = {'loss': loss_mean.item(),
-                   'samples_per_second': M_pad.shape[0] / (time.time() - tick)}
+                   'samples_per_second': points.shape[0] / (time.time() - tick)}
         if i == 0:
-            metrics['images'] = [wandb.Image(log_visuals(M_pad, M_mask, action, waypoints, _waypoints, loss))]
+            metrics['images'] = [wandb.Image(log_visuals(points, mask, action, waypoints, _waypoints, loss, config))]
         wandb.log({('%s/%s' % (desc, k)): v for k, v in metrics.items()},
                 step=wandb.run.summary['step'])
 
@@ -131,6 +133,7 @@ if __name__ == '__main__':
     # Data args.
     parser.add_argument('--dataset_dir', type=Path, required=True)
     parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--map_size', type=int, default=50)
 
     # Optimizer args.
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -161,6 +164,7 @@ if __name__ == '__main__':
                 'num_workers': 8,
                 'dataset_dir': parsed.dataset_dir,
                 'batch_size': parsed.batch_size,
+                'map_size': parsed.map_size
                 },
 
             'optimizer_args': {

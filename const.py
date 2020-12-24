@@ -1,4 +1,4 @@
-MAP_SIZE = 35
+MAP_SIZE = 150 # cached MAP_SIZE, training MAP_SIZE is a CLI argument
 GAP, STEPS = 1, 5
 
 BACKGROUND = [255, 255, 255, 255]

@@ -1,5 +1,6 @@
 from pathlib import Path
 from itertools import repeat, chain
+from functools import partial
 from operator import attrgetter
 import random
 import json
@@ -20,8 +21,12 @@ sys.path.append('/u/nimit/Documents/robomaster/point_policy')
 from point.recording import parse
 
 
-def pad_collate(batch):
-    M, a, w = zip(*batch)
+def pad_collate(batch, diameter):
+    M, A, W = zip(*batch)
+
+    # prune map to intermediate size, so that step() doesn't get cut off
+    M = [prune(m, 2*diameter) for m in M]
+
     M_len = [len(m) for m in M]
     M_mask = torch.zeros(len(M_len), max(M_len), dtype=torch.bool)
     for i, m_len in enumerate(M_len):
@@ -36,12 +41,12 @@ def repeater(loader):
             yield data
 
 class Wrap(object):
-    def __init__(self, data, batch_size, samples, num_workers):
+    def __init__(self, data, batch_size, map_size, samples, num_workers):
         datasets = torch.utils.data.ConcatDataset(data)
 
         self.dataloader = torch.utils.data.DataLoader(datasets, shuffle=True,
                 batch_size=batch_size, num_workers=num_workers, drop_last=True,
-                collate_fn=pad_collate, pin_memory=True)
+                pin_memory=True, collate_fn=partial(pad_collate, diameter=map_size))
         self.data = repeater(self.dataloader)
         self.samples = samples
 
@@ -66,7 +71,8 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
                 if i % 5 == 0:
                     print(f'{i} episodes')
 
-        return Wrap(data, batch_size, 250 if train_or_val == 'training' else 25, num_workers)
+        return Wrap(data, batch_size, kwargs.get('map_size', MAP_SIZE),
+            250 if train_or_val == 'training' else 25, num_workers)
 
     train = make_dataset('training')
     val = make_dataset('testing')
@@ -74,8 +80,9 @@ def get_dataset(dataset_dir, batch_size=128, num_workers=4, **kwargs):
     return train, val
 
 
-#@memory.cache()
+@memory.cache()
 def get_episode(episode_dir):
+    # loads huge map (MAP_SIZE=100)
     return PointDataset(str(episode_dir))
 
 
@@ -193,6 +200,10 @@ class PointDataset(Dataset):
         return out
 
 
+def prune(points, diameter):
+    return points[points[...,:2].abs().max(dim=1)[0] <= diameter/2]
+
+
 def step(points, waypoints, j):
     """
     step to waypoints[i] for j = 0,...,STEPS-1
@@ -204,22 +215,22 @@ def step(points, waypoints, j):
     movement = np.abs(dx) >= 1e-2 and np.abs(dy) >= 1e-2
     heading = (torch.atan2(dy, dx) - (np.pi/2)) if movement else 0.
 
-    xy = points[:,:2].clone()
-    xy[points[:,-1] != 1] -= waypoints[j]
+    xy = points[...,:2].clone()
+    xy[points[...,-1] != 1] -= waypoints[j]
 
     c, s = np.cos(-heading), np.sin(-heading)
     R = torch.Tensor([[c, -s], [s, c]]).T
 
-    orientation = heading + torch.atan2(*points[:,[3,2]].T)
+    orientation = heading + torch.atan2(*points[...,[3,2]].T)
     _points = torch.cat([
         torch.mm(xy, R),
         torch.cos(orientation).unsqueeze(dim=-1),
         torch.sin(orientation).unsqueeze(dim=-1),
-        points[:,4:] # velocity, class
+        points[...,4:] # velocity, class
     ], dim=-1)
 
     # ego-vehicle always facing forward
-    _points[_points[:,-1] == 1, [2,3]] = torch.FloatTensor([1., 0.])
+    _points[_points[...,-1] == 1, [2,3]] = torch.FloatTensor([1., 0.])
 
     _waypoints = torch.mm(waypoints[j:]-waypoints[j], R)
 
@@ -227,26 +238,26 @@ def step(points, waypoints, j):
 
 
 font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
-def visualize_birdview(points, action, waypoints, _waypoints=None, h=MAP_SIZE, r=0.5, w_r=0.5):
-    canvas = np.zeros((h, h, 4), dtype=np.uint8)
+def visualize_birdview(points, action, waypoints, _waypoints=None, diameter=MAP_SIZE, r=0.5, w_r=0.5):
+    canvas = np.zeros((diameter, diameter, 4), dtype=np.uint8)
     canvas[...] = BACKGROUND
     canvas = Image.fromarray(canvas[...,:3])
     draw = ImageDraw.Draw(canvas, 'RGBA')
 
-    for i, (x, y) in enumerate(points[:,:2] + (h//2)):
+    for i, (x, y) in enumerate(points[:,:2] + (diameter//2)):
         R = w_r if points[i,-1].item() == 0 else r
-        draw.ellipse((x - R, h-y - R, x + R, h-y + R), fill=COLORS[int(points[i,-1].item())])
+        draw.ellipse((x - R, diameter-y - R, x + R, diameter-y + R), fill=COLORS[int(points[i,-1].item())])
 
         if points[i,-1].item() != 0:
             heading = np.rad2deg(np.arctan2(*points[i,[3,2]])-(np.pi/2))
-            draw.arc(xy=(x - 3, h-y - 3, x + 3, h-y + 3), start=heading-90, end=heading+90, width=1, fill=COLORS[int(points[i,-1].item())])
+            draw.arc(xy=(x - 3, diameter-y - 3, x + 3, diameter-y + 3), start=heading-90, end=heading+90, width=1, fill=COLORS[int(points[i,-1].item())])
 
-    for x, y in waypoints + (h//2):
-        draw.ellipse((x - w_r, h-y - w_r, x + w_r, h-y + w_r), fill=(0, 175, 0))
+    for x, y in waypoints + (diameter//2):
+        draw.ellipse((x - w_r, diameter-y - w_r, x + w_r, diameter-y + w_r), fill=(0, 175, 0))
 
     if _waypoints is not None:
-        for x, y in _waypoints + (h//2):
-            draw.ellipse((x - w_r, h-y - w_r, x + w_r, h-y + w_r), fill=(175, 0, 0))
+        for x, y in _waypoints + (diameter//2):
+            draw.ellipse((x - w_r, diameter-y - w_r, x + w_r, diameter-y + w_r), fill=(175, 0, 0))
 
     draw.text((0, 0), ACTIONS[int(action)], fill='black', font=font)
     return canvas
@@ -258,7 +269,7 @@ if __name__ == '__main__':
 
     data = PointDataset(sys.argv[1])
 
-    i = 0; j = 1
+    i = 0; j = 0
     while True:
         _points, action, _waypoints = data[i]
         points, waypoints = step(_points, _waypoints, j)
@@ -275,9 +286,11 @@ if __name__ == '__main__':
             i = max(i-1,0)
         elif k == 113: # q
             break
+        elif k >= 49 and k <= 53:
+            j = k-49
         elif k == 119: # w
             j = min(j+1,4)
         elif k == 115: # s
-            j = max(j-1,1)
+            j = max(j-1,0)
         else:
             continue
