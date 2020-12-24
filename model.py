@@ -3,6 +3,7 @@ from itertools import chain
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 from .const import COLORS
@@ -137,8 +138,7 @@ class AttentivePolicy(nn.Module):
         self.positional_encoding = nn.Sequential(
             nn.Linear(5, hidden_size//2),
             nn.ReLU(),
-            nn.Linear(hidden_size//2, hidden_size)
-        )
+            nn.Linear(hidden_size//2, hidden_size))
 
         encoder_layer = TransformerEncoderLayer(hidden_size, nhead)
         self.transformer = TransformerEncoder(encoder_layer, num_layers)
@@ -151,6 +151,11 @@ class AttentivePolicy(nn.Module):
                 nn.Linear(hidden_size//2, steps*2)
             ) for _ in range(6)
         ])
+
+        self.controller = nn.Sequential(
+            nn.Linear(steps*2, steps),
+            nn.ReLU(),
+            nn.Linear(steps, 3))
 
     def forward(self, M_pad, M_mask, action):
         """
@@ -176,6 +181,14 @@ class AttentivePolicy(nn.Module):
             out[action==a] = self.extract[a](attn[action==a]).reshape(-1, self.steps, 2)
 
         return out
+
+    def control(self, waypoints):
+        return self.controller(waypoints.reshape(-1, self.steps*2))
+
+    def control_loss(self, steer, throttle, brake, _steer, _throttle, _brake):
+        loss = torch.square(_steer - steer) + torch.square(_throttle - throttle)
+        loss += F.binary_cross_entropy_with_logits(_brake, brake)
+        return loss
 
 
 if __name__ == '__main__':

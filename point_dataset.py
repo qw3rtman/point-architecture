@@ -1,7 +1,7 @@
 from pathlib import Path
 from itertools import repeat, chain
 from functools import partial
-from operator import attrgetter
+from operator import itemgetter, attrgetter
 import random
 import json
 
@@ -27,7 +27,7 @@ def get_mask(L):
     return mask
 
 def pad_collate(batch, diameter):
-    M, A, W = zip(*batch)
+    M, A, W, S, T, B = zip(*batch)
 
     # prune map to intermediate size, so that step() doesn't get cut off
     # TODO: 2*diameter for step
@@ -36,7 +36,7 @@ def pad_collate(batch, diameter):
     M_mask = get_mask([len(m) for m in M])
     M_pad = pad_sequence(M, batch_first=True, padding_value=0)
 
-    return M_pad, M_mask, torch.as_tensor(np.stack(A)), torch.as_tensor(np.stack(W))
+    return M_pad, M_mask, torch.as_tensor(np.stack(A)), torch.as_tensor(np.stack(W)), torch.as_tensor(np.stack(S)), torch.as_tensor(np.stack(T)), torch.as_tensor(np.stack(B)),
 
 def repeater(loader):
     for loader in repeat(loader):
@@ -111,12 +111,12 @@ class PointDataset(Dataset):
         self.rot = np.deg2rad(self.rot)
 
         # cache frames
-        self.points, self.actions, self.waypoints = [], torch.empty(len(self)), torch.empty(len(self), STEPS, 2)
+        self.points, self.actions, self.waypoints, self.steer, self.throttle, self.brake = [], torch.empty(len(self)), torch.empty(len(self), STEPS, 2), torch.empty(len(self)), torch.empty(len(self)), torch.empty(len(self))
         for idx in range(len(self)):
-            _points, _action, _waypoints = self._get_item(idx)
+            _points, _action, _waypoints, _steer, _throttle, _brake = self._get_item(idx)
             self.points.append(_points)
-            self.actions[idx] = _action
-            self.waypoints[idx] = _waypoints
+            self.actions[idx], self.waypoints[idx] = _action, _waypoints
+            self.steer[idx], self.throttle[idx], self.brake[idx] = _steer, _throttle, _brake
 
         del self.world_map, self.frames, self.map_waypoints, self.map_landmarks
 
@@ -126,7 +126,7 @@ class PointDataset(Dataset):
         return len(self.points)
 
     def __getitem__(self, idx):
-        return self.points[idx], self.actions[idx], self.waypoints[idx]
+        return self.points[idx], self.actions[idx], self.waypoints[idx], self.steer[idx], self.throttle[idx], self.brake[idx]
 
     def _get_item(self, idx):
         points = []
@@ -177,9 +177,11 @@ class PointDataset(Dataset):
         waypoints -= shift
 
         with open(self.dataset_dir / f'measurements/{idx:04}.json', 'r') as f:
-            action = int(json.load(f)['command']) - 1
+            measurements = json.load(f)
+            action = int(measurements['command']) - 1
+            steer, throttle, brake = itemgetter('steer', 'throttle', 'brake')(measurements)
 
-        return points, action, waypoints
+        return points, action, waypoints, steer, throttle, brake
 
     def get_actor_point(self, actor):
         out = np.empty(6)

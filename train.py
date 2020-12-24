@@ -23,7 +23,7 @@ def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoi
     _waypoints_batch = _waypoints_batch.cpu()
 
     images = [(
-        loss_batch[i].mean().item(),
+        loss_batch[i].item(),
         torch.ByteTensor(np.uint8(visualize_birdview(points[mask_batch[i]], action_batch[i].item(), waypoints_batch[i], _waypoints_batch[i], r=1.0, diameter=config['data_args']['map_size'])).transpose(2,0,1))
     ) for i, points in enumerate(points_batch.cpu())]
     images.sort(key=lambda x: x[0], reverse=True)
@@ -44,11 +44,14 @@ def train_or_eval(net, data, optim, is_train, config):
 
     tick = time.time()
     iterator = tqdm.tqdm(data, desc=desc, total=len(data), position=1, leave=None)
-    for i, (points, mask, action, waypoints) in enumerate(iterator):
+    for i, (points, mask, action, waypoints, steer, throttle, brake) in enumerate(iterator):
         points = points.to(config['device'])
         mask = mask.to(config['device'])
         action = action.to(config['device'])
         waypoints = waypoints.to(config['device'])
+        steer = steer.to(config['device'])
+        throttle = throttle.to(config['device'])
+        brake = brake.to(config['device'])
 
         """
         # prune to consistent map size
@@ -57,8 +60,20 @@ def train_or_eval(net, data, optim, is_train, config):
         """
         _waypoints = net(points, mask, action)
 
-        loss = criterion(_waypoints, waypoints)
-        loss_mean = loss.mean()
+        """
+        for i in range(1, 5):
+            points, _ = step(points, _waypoints, i)
+            _waypoints = net(points, mask, action)
+            # TODO: how to compute loss?
+            # at each step through?
+            # at end?
+            # think about this
+        """
+
+        waypoints_loss = criterion(_waypoints, waypoints)
+        control_loss = net.control_loss(steer, throttle, brake, *net.control(_waypoints).T)
+        loss_mean = waypoints_loss.mean() + control_loss.mean()
+        loss = waypoints_loss.mean(dim=-1).mean(dim=-1) + control_loss
 
         if is_train:
             loss_mean.backward()
@@ -69,6 +84,8 @@ def train_or_eval(net, data, optim, is_train, config):
 
         losses.append(loss_mean.item())
         metrics = {'loss': loss_mean.item(),
+                   'waypoints_loss': waypoints_loss.mean().item(),
+                   'control_loss': control_loss.mean().item(),
                    'samples_per_second': points.shape[0] / (time.time() - tick)}
         if i == 0:
             metrics['images'] = [wandb.Image(log_visuals(points, mask, action, waypoints, _waypoints, loss, config))]
