@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from torchvision.utils import make_grid
 
+from .const import STEPS
 from .model import AttentivePolicy
 from .point_dataset import get_dataset, prune, step, visualize_birdview
 
@@ -31,7 +32,7 @@ def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoi
     return make_grid([x[1] for x in images[:32]], nrow=4).numpy().transpose(1,2,0)
 
 
-def train_or_eval(net, data, optim, is_train, config):
+def train_or_eval(net, data, optim, is_train, config, epoch):
     if is_train:
         desc = 'train'
         net.train()
@@ -53,27 +54,45 @@ def train_or_eval(net, data, optim, is_train, config):
         throttle = throttle.to(config['device'])
         brake = brake.to(config['device'])
 
+        # vanilla behavior cloning
+        _waypoints = net(points, mask, action)               # pred traj at t
+        bc_loss = criterion(_waypoints, waypoints)
+
+        # forward consistency (t+1)
+        # NOTE: probably don't need to prune since only t+1
+        #if epoch >= 50:
+        # NOTE: if we detach _waypoints here, we treat the predicted waypoints as data
+        _points, _waypoints_f = step(points, _waypoints, 1)  # pred map at t+1
+        # NOTE: if we detach _points here, we skip the step, treat _points as data, not aug
+        __waypoints = net(_points, mask, action)             # pred traj at t+1'
+        # NOTE: if we detach _waypoints_f here, we basically augmented the map, treat it as
+        #       data, and regress the policy onto the stepped predicted waypoints as data
+        cf_loss = criterion(__waypoints[:,:STEPS-1], _waypoints_f)
+
+        # offline DAgger
+        # TODO: prune, feed into net, step on unpruned, prune, feed into net, etc.
+
+        # learned control
+        control_loss = net.control_loss(steer, throttle, brake, *net.control(_waypoints).T)
+
+        # combine all
+        # TODO: stop control early? overfits
+        #loss = (bc_loss.mean(dim=1) + (0.25*cf_loss.mean(dim=1))).mean(dim=-1) + (0.5*control_loss) # batch_size
+
+        # NOTE: schedule? doesn't seem necessary...
+        loss = bc_loss.mean(dim=1)
+        #if epoch >= 50:
+        loss += cf_loss.mean(dim=1)
+        loss = loss.mean(dim=-1)
+        loss += control_loss
+
+        loss_mean = loss.mean()
+
         """
         # prune to consistent map size
         pruned_points, pruned_mask = batched_prune(points, config['data_args']['map_size'])
         _waypoints = net(pruned_points, pruned_mask, action)
         """
-        _waypoints = net(points, mask, action)
-
-        """
-        for i in range(1, 5):
-            points, _ = step(points, _waypoints, i)
-            _waypoints = net(points, mask, action)
-            # TODO: how to compute loss?
-            # at each step through?
-            # at end?
-            # think about this
-        """
-
-        waypoints_loss = criterion(_waypoints, waypoints)
-        control_loss = net.control_loss(steer, throttle, brake, *net.control(_waypoints).T)
-        loss_mean = waypoints_loss.mean() + control_loss.mean()
-        loss = waypoints_loss.mean(dim=-1).mean(dim=-1) + control_loss
 
         if is_train:
             loss_mean.backward()
@@ -84,7 +103,8 @@ def train_or_eval(net, data, optim, is_train, config):
 
         losses.append(loss_mean.item())
         metrics = {'loss': loss_mean.item(),
-                   'waypoints_loss': waypoints_loss.mean().item(),
+                   'bc_loss': bc_loss.mean().item(),
+                   'cf_loss': cf_loss.mean().item(),
                    'control_loss': control_loss.mean().item(),
                    'samples_per_second': points.shape[0] / (time.time() - tick)}
         if i == 0:
@@ -130,13 +150,13 @@ def main(config, parsed):
     for epoch in tqdm.tqdm(range(wandb.run.summary['epoch']+1, parsed.max_epoch+1), desc='epoch'):
         wandb.run.summary['epoch'] = epoch
 
-        loss_train = train_or_eval(net, data_train, optim, True, config)
+        loss_train = train_or_eval(net, data_train, optim, True, config, epoch)
         with torch.no_grad():
-            loss_val = train_or_eval(net, data_val, None, False, config)
+            loss_val = train_or_eval(net, data_val, None, False, config, epoch)
 
         wandb.log({'train/loss_epoch': loss_train, 'val/loss_epoch': loss_val})
         checkpoint_project(net, optim, scheduler, config)
-        if epoch % 50 == 0:
+        if epoch % 5 == 0:
             torch.save(net.state_dict(), Path(wandb.run.dir) / ('model_%03d.t7' % epoch))
 
 
