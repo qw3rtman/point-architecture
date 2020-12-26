@@ -215,6 +215,7 @@ def prune(points, diameter):
 
 
 def batched_prune(points, diameter):
+    # TODO: this will blow up the computation graph...
     M = [prune(p, diameter) for p in points]
 
     M_mask = get_mask([len(m) for m in M])
@@ -225,39 +226,42 @@ def batched_prune(points, diameter):
 
 def step(points, waypoints, j):
     """
-    step to waypoints[i] for j = 0,...,STEPS-1
+    step to waypoints[:,j] for j = 0,...,STEPS-1
     """
+
     if j == 0:
         return points, waypoints
 
-    dx, dy = waypoints[j] - waypoints[max(0,j-1)]
-    movement = np.abs(dx) >= 1e-2 and np.abs(dy) >= 1e-2
-    heading = (torch.atan2(dy, dx) - (np.pi/2)) if movement else 0.
+    dx, dy = (waypoints[:,j] - waypoints[:,max(0,j-1)]).T
+    movement = (torch.abs(dx) >= 1e-2) & (torch.abs(dy) >= 1e-2)
+    heading = (torch.atan2(dy, dx) - (np.pi/2))
+    heading[~movement] = 0.
 
     xy = points[...,:2].clone()
-    xy[points[...,-1] != 1] -= waypoints[j]
+    # assumes that each batch has exactly 1 ego-vehicle (class=1)
+    xy[points[:,:,-1] != 1] = (xy[points[...,-1] != 1].view(xy.shape[0],-1,2) - waypoints[:,j].unsqueeze(dim=1)).view(-1, 2)
 
-    c, s = np.cos(-heading), np.sin(-heading)
-    R = torch.Tensor([[c, -s], [s, c]]).T
+    c, s = torch.cos(-heading), torch.sin(-heading)
+    R = torch.stack([torch.stack([c,-s]), torch.stack([s,c])]).permute(2,1,0).to(xy.device)
 
-    orientation = heading + torch.atan2(*points[...,[3,2]].T)
+    orientation = (heading + torch.atan2(*points[...,[3,2]].T)).T
     _points = torch.cat([
-        torch.mm(xy, R),
+        torch.bmm(xy, R),
         torch.cos(orientation).unsqueeze(dim=-1),
         torch.sin(orientation).unsqueeze(dim=-1),
         points[...,4:] # velocity, class
     ], dim=-1)
 
     # ego-vehicle always facing forward
-    _points[_points[...,-1] == 1, [2,3]] = torch.FloatTensor([1., 0.])
+    _points[_points[:,:,-1]==1,[[2],[3]]] = torch.FloatTensor([[1.], [0.]]).to(xy.device)
 
-    _waypoints = torch.mm(waypoints[j:]-waypoints[j], R)
+    _waypoints = torch.bmm(waypoints[:,j:]-waypoints[:,[j]], R)
 
     return _points, _waypoints
 
 
 font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
-def visualize_birdview(points, action, waypoints, _waypoints=None, diameter=MAP_SIZE, r=0.5, w_r=0.5):
+def visualize_birdview(points, action, waypoints, _waypoints=None, diameter=MAP_SIZE, r=0.5, w_r=0.5, **kwargs):
     canvas = np.zeros((diameter, diameter, 4), dtype=np.uint8)
     canvas[...] = BACKGROUND
     canvas = Image.fromarray(canvas[...,:3])
@@ -274,9 +278,10 @@ def visualize_birdview(points, action, waypoints, _waypoints=None, diameter=MAP_
     for x, y in waypoints + (diameter//2):
         draw.ellipse((x - w_r, diameter-y - w_r, x + w_r, diameter-y + w_r), fill=(0, 175, 0))
 
+    _w_r = kwargs.get('_w_r', w_r)
     if _waypoints is not None:
         for x, y in _waypoints + (diameter//2):
-            draw.ellipse((x - w_r, diameter-y - w_r, x + w_r, diameter-y + w_r), fill=(175, 0, 0))
+            draw.ellipse((x - _w_r, diameter-y - _w_r, x + _w_r, diameter-y + _w_r), fill=(175, 0, 0))
 
     draw.text((0, 0), ACTIONS[int(action)], fill='black', font=font)
     return canvas
