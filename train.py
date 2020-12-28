@@ -71,18 +71,13 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
             #       data, and regress the policy onto the stepped predicted waypoints as data
             cf_loss = criterion(__waypoints[:,:STEPS-1], _waypoints_f)
 
-        """
-        # offline DAgger (t+1)
-        # TODO: set 2*diameter in pad_collate before training
-        # TODO: prune, feed into net, step on unpruned, prune, feed into net, etc.
-        _points, _waypoints_f = step(points, _waypoints, 1)  # pred map at t+1
-        __waypoints = net(_points, mask, action)             # pred traj at t+1'
-        # NOTE: what is the "ground truth"? will have to do some rotation/translation
-        #       of waypoints based on _waypoints_f (or _waypoints?). remember: the
-        #       reference waypoints are anchored in the real-world (globally), so
-        #       need to reconcile these.
-        od_loss = criterion(__waypoints[:,:STEPS-1], _waypoints_f)
-        """
+        if od:
+            # offline DAgger (t+1)
+            # TODO: set 2*diameter in pad_collate before training
+            # TODO: prune, feed into net, step on unpruned, prune, feed into net, etc.
+            _points, _waypoints_gt, _waypoints_mask = step(points, _waypoints, 1, waypoints_gt=waypoints)
+            __waypoints = net(_points, mask, action)
+            od_loss = criterion(__waypoints[_waypoints_mask], _waypoints_gt)
 
         # learned control
         # NOTE: by detaching, we don't bring this control signal into the policy. the policy
@@ -100,8 +95,9 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
             # NOTE: could weight the "correct" prediction higher than incorrect
             #       prediction (for picking ground-truth) via bc_loss
             loss.append(cf_loss.mean(dim=-1).mean(dim=-1)) # simple mean
-        # NOTE: stop control early loss? overfits
-        loss.append(control_loss)
+        if cf:
+            loss.append(od_loss.mean(dim=-1).mean(dim=-1)) # simple mean
+        loss.append(control_loss) # NOTE: stop control early loss? overfits
 
         loss = torch.stack(loss).sum(dim=0)
         loss_mean = loss.mean()
@@ -121,6 +117,8 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
             metrics['bc_loss'] = bc_loss.mean().item()
         if cf:
             metrics['cf_loss'] = cf_loss.mean().item()
+        if od:
+            metrics['od_loss'] = od_loss.mean().item()
 
         if i == 0:
             metrics['images'] = [wandb.Image(log_visuals(points, mask, action, waypoints, _waypoints, loss, config))]
@@ -165,10 +163,10 @@ def main(config, parsed):
     for epoch in tqdm.tqdm(range(wandb.run.summary['epoch']+1, parsed.max_epoch+1), desc='epoch'):
         wandb.run.summary['epoch'] = epoch
 
-        bc, cf = get_schedule(config['schedule'], epoch)
-        loss_train = train_or_eval(net, data_train, optim, True, config, bc, cf)
+        bc, cf, od = get_schedule(config['schedule'], epoch)
+        loss_train = train_or_eval(net, data_train, optim, True, config, bc, cf, od)
         with torch.no_grad():
-            loss_val = train_or_eval(net, data_val, None, False, config, bc, cf)
+            loss_val = train_or_eval(net, data_val, None, False, config, bc, cf, od)
 
         wandb.log({'train/loss_epoch': loss_train, 'val/loss_epoch': loss_val})
         checkpoint_project(net, optim, scheduler, config)
@@ -178,16 +176,21 @@ def main(config, parsed):
 
 def get_schedule(_id, epoch, **kwargs):
     if _id == 'bc':
-        return True, False
-    elif _id == 'bc_cf':
-        return True, True
-    elif _id == 'bc_add_cf':
-        return True, epoch >= 50
-    elif _id == 'bc_switch_cf':
-        return epoch < 50, epoch >= 50
-    elif _id == 'bc_loss_switch_cf':
+        return True, False, False
+
+    elif _id == 'bc-cf':
+        return True, True, False
+    elif _id == 'bc-add-cf':
+        return True, epoch >= 50, False
+    elif _id == 'bc-switch-cf':
+        return epoch < 50, epoch >= 50, False
+    elif _id == 'bc-loss-switch-cf':
+        # TODO: find a good bc_loss threshold, pass losses into train_or_eval
         bc_loss = kwargs.get('bc_loss', -1)
-        return bc_loss < 0.20, bc_loss >= 0.20
+        return bc_loss < 0.20, bc_loss >= 0.20, False
+
+    elif _id == 'bc-od':
+        return True, False, True
 
 
 if __name__ == '__main__':

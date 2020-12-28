@@ -215,7 +215,9 @@ def prune(points, diameter):
 
 
 def batched_prune(points, diameter):
-    # TODO: this will blow up the computation graph...
+    # NOTE: this will blow up the computation graph...
+    # TODO: just sort `points` by max(x, y) dist!! very fast since
+    #       pytorch just treats this as a shuffle of indices
     M = [prune(p, diameter) for p in points]
 
     M_mask = get_mask([len(m) for m in M])
@@ -224,7 +226,7 @@ def batched_prune(points, diameter):
     return M_pad, M_mask
 
 
-def step(points, waypoints, j):
+def step(points, waypoints, j, waypoints_gt=None):
     """
     step to waypoints[:,j] for j = 0,...,STEPS-1
     """
@@ -255,8 +257,15 @@ def step(points, waypoints, j):
     # ego-vehicle always facing forward
     _points[_points[:,:,-1]==1,[[2],[3]]] = torch.FloatTensor([[1.], [0.]]).to(xy.device)
 
-    _waypoints = torch.bmm(waypoints[:,j:]-waypoints[:,[j]], R)
+    if waypoints_gt is not None:
+        # NOTE: `waypoints` are predicted, we step through that and
+        #       augment `waypoints_gt` to obtain "ground-truth"
+        w = waypoints_gt - waypoints[:,[j]]
+        mask = (w[...,0]>0)&(w[...,1]>0)
+        _waypoints_gt = torch.bmm(w, R)[mask] # over-computing but whatever...
+        return _points, _waypoints_gt, mask
 
+    _waypoints = torch.bmm(waypoints[:,j:]-waypoints[:,[j]], R)
     return _points, _waypoints
 
 
