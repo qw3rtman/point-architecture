@@ -214,7 +214,7 @@ def prune(points, diameter):
     return _points
 
 
-def batched_prune(points, diameter):
+def batched_prune(points, mask, diameter):
     # NOTE: this will blow up the computation graph...
     # TODO: just sort `points` by max(x, y) dist!! very fast since
     #       pytorch just treats this as a shuffle of indices
@@ -261,7 +261,10 @@ def step(points, waypoints, j, waypoints_gt=None):
         # NOTE: `waypoints` are predicted, we step through that and
         #       augment `waypoints_gt` to obtain "ground-truth"
         w = waypoints_gt - waypoints[:,[j]]
-        mask = (w[...,0]>0)&(w[...,1]>0)
+        # prune the ground-truth waypoints behind ego-vehicle after
+        # stepping into the predicted waypoints
+        mask = w[...,1]>0
+
         _waypoints_gt = torch.bmm(w, R)[mask] # over-computing but whatever...
         return _points, _waypoints_gt, mask
 

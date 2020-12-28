@@ -88,18 +88,18 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
                 *net.control(_waypoints.detach(), speed).T)
 
         # combine all
-        loss = []
+        _loss = dict()
         if bc:
-            loss.append(bc_loss.mean(dim=-1).mean(dim=-1))
+            _loss['bc'] = bc_loss.mean(dim=-1).mean(dim=-1)
         if cf:
             # NOTE: could weight the "correct" prediction higher than incorrect
             #       prediction (for picking ground-truth) via bc_loss
-            loss.append(cf_loss.mean(dim=-1).mean(dim=-1)) # simple mean
+            _loss['cf'] = cf_loss.mean(dim=-1).mean(dim=-1) # simple mean
         if cf:
-            loss.append(od_loss.mean(dim=-1).mean(dim=-1)) # simple mean
-        loss.append(control_loss) # NOTE: stop control early loss? overfits
+            _loss['od'] = od_loss.mean(dim=-1).mean(dim=-1) # simple mean
+        _loss['control'] = control_loss # NOTE: stop control early loss? overfits
 
-        loss = torch.stack(loss).sum(dim=0)
+        loss = torch.stack(list(_loss.values())).sum(dim=0) # per-sample loss
         loss_mean = loss.mean()
 
         if is_train:
@@ -127,7 +127,7 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
 
         tick = time.time()
 
-    return np.mean(losses)
+    return np.mean(losses), _loss
 
 
 def resume_project(net, optim, scheduler, config):
@@ -160,13 +160,14 @@ def main(config, parsed):
         wandb.run.summary['step'] = 0
         wandb.run.summary['epoch'] = 0
 
+    _loss_val = dict()
     for epoch in tqdm.tqdm(range(wandb.run.summary['epoch']+1, parsed.max_epoch+1), desc='epoch'):
         wandb.run.summary['epoch'] = epoch
 
-        bc, cf, od = get_schedule(config['schedule'], epoch)
-        loss_train = train_or_eval(net, data_train, optim, True, config, bc, cf, od)
+        bc, cf, od = get_schedule(config['schedule'], epoch, **_loss_val)
+        loss_train, _ = train_or_eval(net, data_train, optim, True, config, bc, cf, od)
         with torch.no_grad():
-            loss_val = train_or_eval(net, data_val, None, False, config, bc, cf, od)
+            loss_val, _loss_val = train_or_eval(net, data_val, None, False, config, bc, cf, od)
 
         wandb.log({'train/loss_epoch': loss_train, 'val/loss_epoch': loss_val})
         checkpoint_project(net, optim, scheduler, config)
@@ -174,23 +175,31 @@ def main(config, parsed):
             torch.save(net.state_dict(), Path(wandb.run.dir) / ('model_%03d.t7' % epoch))
 
 
+BC_LOSS_THRESHOLD = 0.25
 def get_schedule(_id, epoch, **kwargs):
+    bc_loss = kwargs.get('bc', float('inf'))
     if _id == 'bc':
         return True, False, False
 
     elif _id == 'bc-cf':
         return True, True, False
-    elif _id == 'bc-add-cf':
-        return True, epoch >= 50, False
-    elif _id == 'bc-switch-cf':
-        return epoch < 50, epoch >= 50, False
-    elif _id == 'bc-loss-switch-cf':
-        # TODO: find a good bc_loss threshold, pass losses into train_or_eval
-        bc_loss = kwargs.get('bc_loss', -1)
-        return bc_loss < 0.20, bc_loss >= 0.20, False
+    elif _id == 'bc-add_cf':
+        return True, bc_loss < BC_LOSS_THRESHOLD, False
+    elif _id == 'bc-switch_cf':
+        # TODO: find a good threshold
+        return bc_loss >= BC_LOSS_THRESHOLD, bc_loss < BC_LOSS_THRESHOLD, False
 
     elif _id == 'bc-od':
         return True, False, True
+    elif _id == 'bc-add_od':
+        return True, False, bc_loss < BC_LOSS_THRESHOLD
+    elif _id == 'bc-switch_od':
+        return bc_loss >= BC_LOSS_THRESHOLD, False, bc_loss < BC_LOSS_THRESHOLD
+
+    elif _id == 'bc-add_od-add_cf':
+        True, bc_loss < BC_LOSS_THRESHOLD, bc_loss < BC_LOSS_THRESHOLD
+    elif _id == 'bc-switch_od-switch_cf':
+        bc_loss >= BC_LOSS_THRESHOLD, bc_loss < BC_LOSS_THRESHOLD, bc_loss < BC_LOSS_THRESHOLD
 
 
 if __name__ == '__main__':
