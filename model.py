@@ -153,7 +153,7 @@ class AttentivePolicy(nn.Module):
         ])
 
         self.controller = nn.Sequential(
-            nn.Linear(steps*2, steps),
+            nn.Linear((steps*2)+1, steps),
             nn.ReLU(),
             nn.Linear(steps, 3))
 
@@ -182,8 +182,12 @@ class AttentivePolicy(nn.Module):
 
         return out
 
-    def control(self, waypoints):
-        return self.controller(waypoints.reshape(-1, self.steps*2))
+    def control(self, waypoints, speed):#=None):
+        x = waypoints.reshape(-1, self.steps*2)
+        if speed is not None:
+            x = torch.cat([x, speed], dim=-1)
+
+        return self.controller(x)
 
     def control_loss(self, steer, throttle, brake, _steer, _throttle, _brake):
         loss = torch.square(_steer - steer) + torch.square(_throttle - throttle)
