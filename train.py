@@ -85,7 +85,12 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
         """
 
         # learned control
-        control_loss = net.control_loss(steer, throttle, brake, *net.control(_waypoints).T)
+        # NOTE: by detaching, we don't bring this control signal into the policy. the policy
+        #       shouldn't 1) adapt to cheat/trick the controller (by predicting easy waypoints
+        #       or 2) learn bad control due to early (poor) waypoint predictions.
+        speed = points[points[...,-1] == 1, [[4]]].T
+        control_loss = net.control_loss(steer, throttle, brake,
+                *net.control(_waypoints.detach(), speed).T)
 
         # combine all
         loss = []
@@ -160,7 +165,7 @@ def main(config, parsed):
     for epoch in tqdm.tqdm(range(wandb.run.summary['epoch']+1, parsed.max_epoch+1), desc='epoch'):
         wandb.run.summary['epoch'] = epoch
 
-        bc, cf = True, epoch >= 50
+        bc, cf = get_schedule(config['schedule'], epoch)
         loss_train = train_or_eval(net, data_train, optim, True, config, bc, cf)
         with torch.no_grad():
             loss_val = train_or_eval(net, data_val, None, False, config, bc, cf)
@@ -171,9 +176,24 @@ def main(config, parsed):
             torch.save(net.state_dict(), Path(wandb.run.dir) / ('model_%03d.t7' % epoch))
 
 
+def get_schedule(_id, epoch, **kwargs):
+    if _id == 'bc':
+        return True, False
+    elif _id == 'bc_cf':
+        return True, True
+    elif _id == 'bc_add_cf':
+        return True, epoch >= 50
+    elif _id == 'bc_switch_cf':
+        return epoch < 50, epoch >= 50
+    elif _id == 'bc_loss_switch_cf':
+        bc_loss = kwargs.get('bc_loss', -1)
+        return bc_loss < 0.20, bc_loss >= 0.20
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--description', type=str, default='')
+    parser.add_argument('--schedule', type=str, required=True)
     parser.add_argument('--max_epoch', type=int, default=200)
     parser.add_argument('--checkpoint_dir', type=Path, default='checkpoints')
 
@@ -193,7 +213,7 @@ if __name__ == '__main__':
 
     parsed = parser.parse_args()
 
-    keys = ['batch_size', 'map_size', 'hidden_size', 'num_layers', 'num_heads', 'lr', 'weight_decay', 'description']
+    keys = ['batch_size', 'map_size', 'hidden_size', 'num_layers', 'num_heads', 'lr', 'weight_decay', 'schedule', 'description']
     run_name  = '_'.join(str(getattr(parsed, x)) for x in keys)
 
     checkpoint_dir = parsed.checkpoint_dir / run_name
@@ -201,6 +221,7 @@ if __name__ == '__main__':
 
     config = {
             'run_name': run_name,
+            'schedule': parsed.schedule,
             'max_epoch': parsed.max_epoch,
             'checkpoint_dir': checkpoint_dir,
 
