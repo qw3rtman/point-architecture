@@ -32,7 +32,7 @@ def log_visuals(points_batch, mask_batch, action_batch, waypoints_batch, _waypoi
     return make_grid([x[1] for x in images[:32]], nrow=4).numpy().transpose(1,2,0)
 
 
-def train_or_eval(net, data, optim, is_train, config, epoch):
+def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=False):
     if is_train:
         desc = 'train'
         net.train()
@@ -55,44 +55,51 @@ def train_or_eval(net, data, optim, is_train, config, epoch):
         brake = brake.to(config['device'])
 
         # vanilla behavior cloning
-        _waypoints = net(points, mask, action)               # pred traj at t
-        bc_loss = criterion(_waypoints, waypoints)
+        if bc:
+            _waypoints = net(points, mask, action)                   # pred traj at t
+            bc_loss = criterion(_waypoints, waypoints)
 
         # forward consistency (t+1)
-        # NOTE: probably don't need to prune since only t+1
-        #if epoch >= 50:
-        # NOTE: if we detach _waypoints here, we treat the predicted waypoints as data
-        _points, _waypoints_f = step(points, _waypoints, 1)  # pred map at t+1
-        # NOTE: if we detach _points here, we skip the step, treat _points as data, not aug
-        __waypoints = net(_points, mask, action)             # pred traj at t+1'
-        # NOTE: if we detach _waypoints_f here, we basically augmented the map, treat it as
-        #       data, and regress the policy onto the stepped predicted waypoints as data
-        cf_loss = criterion(__waypoints[:,:STEPS-1], _waypoints_f)
+        if cf:
+            if not bc:
+                _waypoints = net(points, mask, action)           # pred traj at t
+            # NOTE: if we detach _waypoints here, we treat the predicted waypoints as data
+            _points, _waypoints_f = step(points, _waypoints, 1)  # pred map at t+1
+            # NOTE: if we detach _points here, we skip the step, treat _points as data, not aug
+            __waypoints = net(_points, mask, action)             # pred traj at t+1'
+            # NOTE: if we detach _waypoints_f here, we basically augmented the map, treat it as
+            #       data, and regress the policy onto the stepped predicted waypoints as data
+            cf_loss = criterion(__waypoints[:,:STEPS-1], _waypoints_f)
 
-        # offline DAgger
+        """
+        # offline DAgger (t+1)
+        # TODO: set 2*diameter in pad_collate before training
         # TODO: prune, feed into net, step on unpruned, prune, feed into net, etc.
+        _points, _waypoints_f = step(points, _waypoints, 1)  # pred map at t+1
+        __waypoints = net(_points, mask, action)             # pred traj at t+1'
+        # NOTE: what is the "ground truth"? will have to do some rotation/translation
+        #       of waypoints based on _waypoints_f (or _waypoints?). remember: the
+        #       reference waypoints are anchored in the real-world (globally), so
+        #       need to reconcile these.
+        od_loss = criterion(__waypoints[:,:STEPS-1], _waypoints_f)
+        """
 
         # learned control
         control_loss = net.control_loss(steer, throttle, brake, *net.control(_waypoints).T)
 
         # combine all
-        # TODO: stop control early? overfits
-        #loss = (bc_loss.mean(dim=1) + (0.25*cf_loss.mean(dim=1))).mean(dim=-1) + (0.5*control_loss) # batch_size
+        loss = []
+        if bc:
+            loss.append(bc_loss.mean(dim=-1).mean(dim=-1))
+        if cf:
+            # NOTE: could weight the "correct" prediction higher than incorrect
+            #       prediction (for picking ground-truth) via bc_loss
+            loss.append(cf_loss.mean(dim=-1).mean(dim=-1)) # simple mean
+        # NOTE: stop control early loss? overfits
+        loss.append(control_loss)
 
-        # NOTE: schedule? doesn't seem necessary...
-        loss = bc_loss.mean(dim=1)
-        #if epoch >= 50:
-        loss += cf_loss.mean(dim=1)
-        loss = loss.mean(dim=-1)
-        loss += control_loss
-
+        loss = torch.stack(loss).sum(dim=0)
         loss_mean = loss.mean()
-
-        """
-        # prune to consistent map size
-        pruned_points, pruned_mask = batched_prune(points, config['data_args']['map_size'])
-        _waypoints = net(pruned_points, pruned_mask, action)
-        """
 
         if is_train:
             loss_mean.backward()
@@ -103,10 +110,13 @@ def train_or_eval(net, data, optim, is_train, config, epoch):
 
         losses.append(loss_mean.item())
         metrics = {'loss': loss_mean.item(),
-                   'bc_loss': bc_loss.mean().item(),
-                   'cf_loss': cf_loss.mean().item(),
                    'control_loss': control_loss.mean().item(),
                    'samples_per_second': points.shape[0] / (time.time() - tick)}
+        if bc:
+            metrics['bc_loss'] = bc_loss.mean().item()
+        if cf:
+            metrics['cf_loss'] = cf_loss.mean().item()
+
         if i == 0:
             metrics['images'] = [wandb.Image(log_visuals(points, mask, action, waypoints, _waypoints, loss, config))]
         wandb.log({('%s/%s' % (desc, k)): v for k, v in metrics.items()},
@@ -150,9 +160,10 @@ def main(config, parsed):
     for epoch in tqdm.tqdm(range(wandb.run.summary['epoch']+1, parsed.max_epoch+1), desc='epoch'):
         wandb.run.summary['epoch'] = epoch
 
-        loss_train = train_or_eval(net, data_train, optim, True, config, epoch)
+        bc, cf = True, epoch >= 50
+        loss_train = train_or_eval(net, data_train, optim, True, config, bc, cf)
         with torch.no_grad():
-            loss_val = train_or_eval(net, data_val, None, False, config, epoch)
+            loss_val = train_or_eval(net, data_val, None, False, config, bc, cf)
 
         wandb.log({'train/loss_epoch': loss_train, 'val/loss_epoch': loss_val})
         checkpoint_project(net, optim, scheduler, config)
