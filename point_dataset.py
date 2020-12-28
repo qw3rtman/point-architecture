@@ -257,23 +257,24 @@ def step(points, waypoints, j, waypoints_gt=None):
     # ego-vehicle always facing forward
     _points[_points[:,:,-1]==1,[[2],[3]]] = torch.FloatTensor([[1.], [0.]]).to(xy.device)
 
+    _waypoints = torch.bmm(waypoints[:,j:]-waypoints[:,[j]], R)
     if waypoints_gt is not None:
         # NOTE: `waypoints` are predicted, we step through that and
         #       augment `waypoints_gt` to obtain "ground-truth"
         w = waypoints_gt - waypoints[:,[j]]
+        _waypoints_gt = torch.bmm(w, R) # over-computing but whatever...
+
         # prune the ground-truth waypoints behind ego-vehicle after
         # stepping into the predicted waypoints
-        mask = w[...,1]>0
+        mask = _waypoints_gt[...,1]>0
 
-        _waypoints_gt = torch.bmm(w, R)[mask] # over-computing but whatever...
-        return _points, _waypoints_gt, mask
+        return _points, _waypoints, _waypoints_gt[mask], mask
 
-    _waypoints = torch.bmm(waypoints[:,j:]-waypoints[:,[j]], R)
     return _points, _waypoints
 
 
 font = ImageFont.truetype('/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf', 16)
-def visualize_birdview(points, action, waypoints, _waypoints=None, diameter=MAP_SIZE, r=0.5, w_r=0.5, **kwargs):
+def visualize_birdview(points, action, waypoints, _waypoints=None, waypoints_gt=None, diameter=MAP_SIZE, r=0.5, w_r=0.5, **kwargs):
     canvas = np.zeros((diameter, diameter, 4), dtype=np.uint8)
     canvas[...] = BACKGROUND
     canvas = Image.fromarray(canvas[...,:3])
@@ -294,6 +295,10 @@ def visualize_birdview(points, action, waypoints, _waypoints=None, diameter=MAP_
     if _waypoints is not None:
         for x, y in _waypoints + (diameter//2):
             draw.ellipse((x - _w_r, diameter-y - _w_r, x + _w_r, diameter-y + _w_r), fill=(175, 0, 0))
+
+    if waypoints_gt is not None:
+        for x, y in waypoints_gt + (diameter//2):
+            draw.ellipse((x - _w_r, diameter-y - _w_r, x + _w_r, diameter-y + _w_r), fill=(175, 175, 0))
 
     draw.text((0, 0), ACTIONS[int(action)], fill='black', font=font)
     return canvas

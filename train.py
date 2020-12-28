@@ -72,12 +72,14 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
             cf_loss = criterion(__waypoints[:,:STEPS-1], _waypoints_f)
 
         if od:
+            if not bc and not cf:
+                _waypoints = net(points, mask, action)           # pred traj at t
             # offline DAgger (t+1)
             # TODO: set 2*diameter in pad_collate before training
             # TODO: prune, feed into net, step on unpruned, prune, feed into net, etc.
-            _points, _waypoints_gt, _waypoints_mask = step(points, _waypoints, 1, waypoints_gt=waypoints)
+            _points, waypoints_gt, _waypoints_gt, _waypoints_mask = step(points, _waypoints, 1, waypoints_gt=waypoints)
             __waypoints = net(_points, mask, action)
-            od_loss = criterion(__waypoints[_waypoints_mask], _waypoints_gt)
+            od_loss = criterion(__waypoints[_waypoints_mask.flip(dims=(1,))], _waypoints_gt)
 
         # learned control
         # NOTE: by detaching, we don't bring this control signal into the policy. the policy
@@ -95,7 +97,7 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
             # NOTE: could weight the "correct" prediction higher than incorrect
             #       prediction (for picking ground-truth) via bc_loss
             _loss['cf'] = cf_loss.mean(dim=-1).mean(dim=-1) # simple mean
-        if cf:
+        if od:
             _loss['od'] = od_loss.mean(dim=-1).mean(dim=-1) # simple mean
         _loss['control'] = control_loss # NOTE: stop control early loss? overfits
 
@@ -127,7 +129,7 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
 
         tick = time.time()
 
-    return np.mean(losses), _loss
+    return np.mean(losses), {k: v.mean().item() for k, v in _loss.items()}
 
 
 def resume_project(net, optim, scheduler, config):
@@ -175,6 +177,7 @@ def main(config, parsed):
             torch.save(net.state_dict(), Path(wandb.run.dir) / ('model_%03d.t7' % epoch))
 
 
+# TODO: find a good threshold
 BC_LOSS_THRESHOLD = 0.25
 def get_schedule(_id, epoch, **kwargs):
     bc_loss = kwargs.get('bc', float('inf'))
@@ -184,22 +187,21 @@ def get_schedule(_id, epoch, **kwargs):
     elif _id == 'bc-cf':
         return True, True, False
     elif _id == 'bc-add_cf':
-        return True, bc_loss < BC_LOSS_THRESHOLD, False
+        return True, bool(bc_loss < BC_LOSS_THRESHOLD), False
     elif _id == 'bc-switch_cf':
-        # TODO: find a good threshold
-        return bc_loss >= BC_LOSS_THRESHOLD, bc_loss < BC_LOSS_THRESHOLD, False
+        return bool(bc_loss >= BC_LOSS_THRESHOLD), bool(bc_loss < BC_LOSS_THRESHOLD), False
 
     elif _id == 'bc-od':
         return True, False, True
     elif _id == 'bc-add_od':
-        return True, False, bc_loss < BC_LOSS_THRESHOLD
+        return True, False, bool(bc_loss < BC_LOSS_THRESHOLD)
     elif _id == 'bc-switch_od':
-        return bc_loss >= BC_LOSS_THRESHOLD, False, bc_loss < BC_LOSS_THRESHOLD
+        return bool(bc_loss >= BC_LOSS_THRESHOLD), False, bool(bc_loss < BC_LOSS_THRESHOLD)
 
     elif _id == 'bc-add_od-add_cf':
-        True, bc_loss < BC_LOSS_THRESHOLD, bc_loss < BC_LOSS_THRESHOLD
+        return True, bool(bc_loss < BC_LOSS_THRESHOLD), bool(bc_loss < BC_LOSS_THRESHOLD)
     elif _id == 'bc-switch_od-switch_cf':
-        bc_loss >= BC_LOSS_THRESHOLD, bc_loss < BC_LOSS_THRESHOLD, bc_loss < BC_LOSS_THRESHOLD
+        return bool(bc_loss >= BC_LOSS_THRESHOLD), bool(bc_loss < BC_LOSS_THRESHOLD), bool(bc_loss < BC_LOSS_THRESHOLD)
 
 
 if __name__ == '__main__':

@@ -87,6 +87,37 @@ def forward_consistency(net, data, map_size):
             break
 
 
+def offline_dagger(net, data, map_size):
+    cv2.namedWindow('map', cv2.WINDOW_NORMAL)
+
+    i, j = 300, 1
+    while True:
+        points, action, waypoints, _, _, _ = data[i]
+        points = prune(points, map_size)
+        points = points.reshape(1,-1,6).cuda()
+        mask = torch.ones((1, points.shape[1]), dtype=torch.bool).cuda()
+        action = action.reshape(1).cuda()
+        waypoints = waypoints.unsqueeze(dim=0).cuda()
+
+        _waypoints = net(points, mask, action)
+        _points, waypoints_gt, _waypoints_gt, _waypoints_mask = step(points, _waypoints, j, waypoints_gt=waypoints)
+        __waypoints = net(_points, mask, action)
+
+        canvas = visualize_birdview(_points[0].detach().cpu(), action, _waypoints_gt.cpu(), _waypoints=__waypoints[_waypoints_mask.flip(dims=(1,))].cpu(), waypoints_gt=waypoints_gt[0].cpu(), r=1.0, w_r=0.5, _w_r=0.5, diameter=map_size)
+        cv2.imshow('map', cv2.cvtColor(np.array(canvas), cv2.COLOR_BGR2RGB))
+        cv2.resizeWindow('map', 400, 400)
+
+        k = cv2.waitKey(0)
+        if k == 100:
+            i = min(i+1,len(data)-1)
+        elif k == 97: #108: # l
+            i = max(i-1,0)
+        elif k >= 49 and k <= 53:
+            j = k-49
+        elif k == 113: # q
+            break
+
+
 if __name__ == '__main__':
     import sys
     import cv2
@@ -102,7 +133,7 @@ if __name__ == '__main__':
     data = get_episode(str(args.dataset))
 
     config = yaml.load((args.policy.parent/'config.yaml').read_text())
-    map_size = config['data_args']['value']['map_size']
+    map_size = config['data_args']['value']['map_size']+10
     net = AttentivePolicy(**config['model_args']['value'])
     net.load_state_dict(torch.load(args.policy))
     net.cuda()
@@ -110,4 +141,5 @@ if __name__ == '__main__':
 
     #nothing(data)
     #drive_around(net, data, map_size)
-    forward_consistency(net, data, map_size)
+    #forward_consistency(net, data, map_size)
+    offline_dagger(net, data, map_size)
