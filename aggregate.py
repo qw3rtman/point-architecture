@@ -22,7 +22,7 @@ for stats_f in args.model.parent.glob(f'{args.model.stem}-*.txt'):
     data.append(dict(zip(stats['labels'], map(float, stats['values']))))
 
 df = pd.DataFrame(data, index=indices).sort_index()
-print(df)
+print(df[['Avg. driving score', 'Avg. route completion']])
 print()
 print(f"{labels[0]}: {df[labels[0]].mean():.02f}")
 print(f"{labels[1]}: {df[labels[1]].mean():.02f}")

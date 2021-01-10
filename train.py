@@ -77,17 +77,27 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
             # offline DAgger (t+1)
             # TODO: set 2*diameter in pad_collate before training
             # TODO: prune, feed into net, step on unpruned, prune, feed into net, etc.
-            _points, waypoints_gt, _waypoints_gt, _waypoints_mask = step(points, _waypoints, 1, waypoints_gt=waypoints)
-            __waypoints = net(_points, mask, action)
-            od_loss = criterion(__waypoints[_waypoints_mask.flip(dims=(1,))], _waypoints_gt)
+            #waypoints_gt = waypoints.clone()
+            od_loss = torch.zeros(waypoints.shape[0]).to(waypoints.device)
+            for j in range(1, STEPS-1):
+                #_waypoints = _waypoints.reshape(-1, STEPS-(j-1), 2)
+                # NOTE: we overwrite `waypoints` here
+                #_points, waypoints_gt, _, _waypoints_mask = step(points, _waypoints, j, waypoints_gt=waypoints)#[:,j:])
+                _points, _, waypoints_gt, _waypoints_mask = step(points, _waypoints, j, waypoints_gt=waypoints)#[:,j:])
+                waypoints_gt = waypoints_gt.reshape(-1, STEPS-j, 2)
+                __waypoints = net(_points, mask, action)
+                od_loss += criterion(__waypoints[:,:STEPS-j], waypoints_gt).mean(dim=-1).mean(dim=-1)
+            #od_loss = criterion(__waypoints[_waypoints_mask.flip(dims=(1,))], _waypoints_gt)
 
         # learned control
         # NOTE: by detaching, we don't bring this control signal into the policy. the policy
         #       shouldn't 1) adapt to cheat/trick the controller (by predicting easy waypoints
         #       or 2) learn bad control due to early (poor) waypoint predictions.
+        if not bc and not cf:
+            _waypoints = net(points, mask, action)              # pred traj at t
         speed = points[points[...,-1] == 1, [[4]]].T
         control_loss = net.control_loss(steer, throttle, brake,
-                *net.control(_waypoints.detach(), speed).T)
+                *net.control(_waypoints.detach(), speed).T) # TODO: _waypoints or waypoints?
 
         # combine all
         _loss = dict()
@@ -97,10 +107,9 @@ def train_or_eval(net, data, optim, is_train, config, bc=True, cf=False, od=Fals
             # NOTE: could weight the "correct" prediction higher than incorrect
             #       prediction (for picking ground-truth) via bc_loss
             _loss['cf'] = cf_loss.mean(dim=-1).mean(dim=-1) # simple mean
-        if od:
-            _loss['od'] = od_loss.mean(dim=-1).mean(dim=-1) # simple mean
+        if od: # TODO: od_loss per-sample. for now, it's not included in the per-sample loss
+            _loss['od'] = od_loss
         _loss['control'] = control_loss # NOTE: stop control early loss? overfits
-
         loss = torch.stack(list(_loss.values())).sum(dim=0) # per-sample loss
         loss_mean = loss.mean()
 
@@ -180,7 +189,7 @@ def main(config, parsed):
 # TODO: find a good threshold
 BC_LOSS_THRESHOLD = 0.25
 def get_schedule(_id, epoch, **kwargs):
-    bc_loss = kwargs.get('bc', float('inf'))
+    bc_loss = kwargs.get('bc', float('-inf'))
     if _id == 'bc':
         return True, False, False
 
@@ -191,6 +200,8 @@ def get_schedule(_id, epoch, **kwargs):
     elif _id == 'bc-switch_cf':
         return bool(bc_loss >= BC_LOSS_THRESHOLD), bool(bc_loss < BC_LOSS_THRESHOLD), False
 
+    elif _id == 'od':
+        return False, False, True
     elif _id == 'bc-od':
         return True, False, True
     elif _id == 'bc-add_od':

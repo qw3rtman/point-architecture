@@ -266,7 +266,9 @@ def step(points, waypoints, j, waypoints_gt=None):
 
         # prune the ground-truth waypoints behind ego-vehicle after
         # stepping into the predicted waypoints
-        mask = _waypoints_gt[...,1]>0
+        #mask = _waypoints_gt[...,1]>0
+        mask = torch.zeros_like(_waypoints_gt, dtype=torch.bool)
+        mask[:,j:] = True
 
         return _points, _waypoints, _waypoints_gt[mask], mask
 
